@@ -26,12 +26,20 @@ pub enum ContractError {
 pub enum DataKey {
     Loan(Address),    // borrower → LoanRecord
     Vouches(Address), // borrower → Vec<VouchRecord>
+    Credit(Address),  // borrower → CreditRecord
     Admin,            // Address allowed to call slash
     Token,            // XLM token contract address
     Deployer,         // Address that deployed the contract; guards initialize
 }
 
 // ── Data Types ────────────────────────────────────────────────────────────────
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct CreditRecord {
+    pub repayment_count: u32,
+    pub default_count: u32,
+}
 
 #[contracttype]
 #[derive(Clone)]
@@ -47,6 +55,20 @@ pub struct LoanRecord {
 pub struct VouchRecord {
     pub voucher: Address,
     pub stake: i128, // in stroops
+}
+
+// ── Pure helpers ──────────────────────────────────────────────────────────────
+
+/// Compute a [0, 100] credit score from raw counters.
+///
+/// Returns 50 when both counts are zero (no history).
+/// Otherwise: `(repayment_count * 100) / (repayment_count + default_count)`,
+/// clamped to 100 via `.min(100)`.
+fn compute_score(repayment_count: u32, default_count: u32) -> u32 {
+    if repayment_count == 0 && default_count == 0 {
+        return 50;
+    }
+    ((repayment_count * 100) / (repayment_count + default_count)).min(100)
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -194,7 +216,18 @@ impl QuorumCreditContract {
         loan.repaid = true;
         env.storage()
             .persistent()
-            .set(&DataKey::Loan(borrower), &loan);
+            .set(&DataKey::Loan(borrower.clone()), &loan);
+
+        // Update credit record: increment repayment_count.
+        let mut credit: CreditRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Credit(borrower.clone()))
+            .unwrap_or(CreditRecord { repayment_count: 0, default_count: 0 });
+        credit.repayment_count += 1;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Credit(borrower), &credit);
     }
 
     /// Admin marks a loan defaulted; 50% of each voucher's stake is slashed.
@@ -234,7 +267,18 @@ impl QuorumCreditContract {
         loan.defaulted = true;
         env.storage()
             .persistent()
-            .set(&DataKey::Loan(borrower), &loan);
+            .set(&DataKey::Loan(borrower.clone()), &loan);
+
+        // Update credit record: increment default_count.
+        let mut credit: CreditRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Credit(borrower.clone()))
+            .unwrap_or(CreditRecord { repayment_count: 0, default_count: 0 });
+        credit.default_count += 1;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Credit(borrower), &credit);
     }
 
     // ── Views ─────────────────────────────────────────────────────────────────
@@ -248,6 +292,19 @@ impl QuorumCreditContract {
             .persistent()
             .get(&DataKey::Vouches(borrower))
             .unwrap_or(Vec::new(&env))
+    }
+
+    /// Return the credit score for `borrower` in [0, 100].
+    ///
+    /// Reads the persistent `CreditRecord` (defaults to `{0, 0}` if absent)
+    /// and delegates to `compute_score`. Does not write to storage.
+    pub fn get_credit_score(env: Env, borrower: Address) -> u32 {
+        let credit: CreditRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Credit(borrower))
+            .unwrap_or(CreditRecord { repayment_count: 0, default_count: 0 });
+        compute_score(credit.repayment_count, credit.default_count)
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -428,6 +485,9 @@ mod tests {
         
         // This should panic due to zero amount
         client.request_loan(&borrower, &0, &1_000_000);
+    }
+
+    #[test]
     fn test_repay_with_max_vouchers() {
         let env = Env::default();
         env.budget().reset_unlimited();
@@ -484,5 +544,143 @@ mod tests {
         let extra_voucher = Address::generate(&env);
         token_admin.mint(&extra_voucher, &10_000_000);
         client.vouch(&extra_voucher, &borrower, &1_000_000);
+    }
+
+    // ── Credit Score Tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_repay_increments_repayment_count() {
+        let env = Env::default();
+        let (contract_id, _token_addr, _admin, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        client.vouch(&voucher, &borrower, &1_000_000);
+        client.request_loan(&borrower, &500_000, &1_000_000);
+        client.repay(&borrower);
+
+        let credit: CreditRecord = env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .get(&DataKey::Credit(borrower))
+                .expect("credit record should exist after repay")
+        });
+
+        assert_eq!(credit.repayment_count, 1);
+        assert_eq!(credit.default_count, 0);
+    }
+
+    #[test]
+    fn test_slash_increments_default_count() {
+        let env = Env::default();
+        let (contract_id, _token_addr, _admin, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        client.vouch(&voucher, &borrower, &1_000_000);
+        client.request_loan(&borrower, &500_000, &1_000_000);
+        client.slash(&borrower);
+
+        let credit: CreditRecord = env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .get(&DataKey::Credit(borrower))
+                .expect("credit record should exist after slash")
+        });
+
+        assert_eq!(credit.default_count, 1);
+        assert_eq!(credit.repayment_count, 0);
+    }
+
+    #[test]
+    fn test_get_credit_score_no_history() {
+        let env = Env::default();
+        let (contract_id, _token_addr, _admin, borrower, _voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        // Fresh borrower with no loan activity
+        assert_eq!(client.get_credit_score(&borrower), 50);
+    }
+
+    #[test]
+    fn test_get_credit_score_all_repaid() {
+        let env = Env::default();
+        let (contract_id, _token_addr, _admin, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        client.vouch(&voucher, &borrower, &1_000_000);
+        client.request_loan(&borrower, &500_000, &1_000_000);
+        client.repay(&borrower);
+
+        assert_eq!(client.get_credit_score(&borrower), 100);
+    }
+
+    #[test]
+    fn test_get_credit_score_all_defaulted() {
+        let env = Env::default();
+        let (contract_id, _token_addr, _admin, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        client.vouch(&voucher, &borrower, &1_000_000);
+        client.request_loan(&borrower, &500_000, &1_000_000);
+        client.slash(&borrower);
+
+        assert_eq!(client.get_credit_score(&borrower), 0);
+    }
+
+    #[test]
+    fn test_get_credit_score_mixed() {
+        // Test compute_score directly: 3 repayments, 1 default → 75
+        assert_eq!(compute_score(3, 1), 75);
+        // Additional sanity checks
+        assert_eq!(compute_score(0, 0), 50);
+        assert_eq!(compute_score(1, 0), 100);
+        assert_eq!(compute_score(0, 1), 0);
+    }
+
+    #[test]
+    fn test_repay_twice_does_not_double_count() {
+        let env = Env::default();
+        let (contract_id, _token_addr, _admin, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        client.vouch(&voucher, &borrower, &1_000_000);
+        client.request_loan(&borrower, &500_000, &1_000_000);
+        client.repay(&borrower);
+
+        // Second repay should fail (loan already repaid)
+        let result = client.try_repay(&borrower);
+        assert!(result.is_err(), "second repay should return an error");
+
+        // repayment_count should still be 1
+        let credit: CreditRecord = env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .get(&DataKey::Credit(borrower))
+                .expect("credit record should exist")
+        });
+        assert_eq!(credit.repayment_count, 1);
+    }
+
+    #[test]
+    fn test_slash_twice_does_not_double_count() {
+        let env = Env::default();
+        let (contract_id, _token_addr, _admin, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        client.vouch(&voucher, &borrower, &1_000_000);
+        client.request_loan(&borrower, &500_000, &1_000_000);
+        client.slash(&borrower);
+
+        // Second slash should fail (loan already defaulted)
+        let result = client.try_slash(&borrower);
+        assert!(result.is_err(), "second slash should return an error");
+
+        // default_count should still be 1
+        let credit: CreditRecord = env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .get(&DataKey::Credit(borrower))
+                .expect("credit record should exist")
+        });
+        assert_eq!(credit.default_count, 1);
     }
 }
