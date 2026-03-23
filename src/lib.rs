@@ -398,4 +398,31 @@ mod tests {
         let loan = client.get_loan(&borrower).unwrap();
         assert!(loan.repaid);
     }
+
+    #[test]
+    #[should_panic(expected = "maximum vouchers per loan exceeded")]
+    fn test_vouch_exceeds_max_limit() {
+        let env = Env::default();
+        let (contract_id, token_addr, _admin, borrower, _) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        let token_admin = StellarAssetClient::new(&env, &token_addr);
+
+        // Create MAX_VOUCHERS_PER_LOAN vouchers
+        let mut vouchers = Vec::new(&env);
+        for _ in 0..MAX_VOUCHERS_PER_LOAN {
+            let voucher = Address::generate(&env);
+            token_admin.mint(&voucher, &10_000_000);
+            vouchers.push_back(voucher);
+        }
+
+        // Vouch with all MAX_VOUCHERS_PER_LOAN
+        for voucher in vouchers.iter() {
+            client.vouch(&voucher, &borrower, &1_000_000);
+        }
+
+        // Try to vouch one more - should panic
+        let extra_voucher = Address::generate(&env);
+        token_admin.mint(&extra_voucher, &10_000_000);
+        client.vouch(&extra_voucher, &borrower, &1_000_000);
+    }
 }
