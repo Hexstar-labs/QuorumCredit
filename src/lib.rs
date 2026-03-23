@@ -8,6 +8,8 @@ use soroban_sdk::{contract, contractimpl, contracttype, contracterror, token, Ad
 const YIELD_BPS: i128 = 200;
 /// Slash penalty on default: 50% of voucher stake burned.
 const SLASH_BPS: i128 = 5000;
+/// Maximum number of vouchers per loan to prevent DoS.
+const MAX_VOUCHERS_PER_LOAN: u32 = 100;
 
 // ── Errors ────────────────────────────────────────────────────────────────────
 
@@ -88,6 +90,11 @@ impl QuorumCreditContract {
             .persistent()
             .get(&DataKey::Vouches(borrower.clone()))
             .unwrap_or(Vec::new(&env));
+
+        assert!(
+            vouches.len() < MAX_VOUCHERS_PER_LOAN,
+            "maximum vouchers per loan exceeded"
+        );
 
         vouches.push_back(VouchRecord { voucher, stake });
         env.storage()
@@ -358,5 +365,37 @@ mod tests {
             Err(Ok(ContractError::InsufficientFunds)),
             "expected InsufficientFunds error when contract balance < loan amount"
         );
+    }
+
+    #[test]
+    fn test_repay_with_max_vouchers() {
+        let env = Env::default();
+        env.budget().reset_unlimited();
+        let (contract_id, token_addr, _admin, borrower, _) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        let token_admin = StellarAssetClient::new(&env, &token_addr);
+
+        // Create max vouchers
+        let mut vouchers = Vec::new(&env);
+        for _ in 0..MAX_VOUCHERS_PER_LOAN {
+            let voucher = Address::generate(&env);
+            token_admin.mint(&voucher, &10_000_000);
+            vouchers.push_back(voucher);
+        }
+
+        // Vouch with all
+        for voucher in vouchers.iter() {
+            client.vouch(&voucher, &borrower, &1_000_000);
+        }
+
+        // Request loan
+        client.request_loan(&borrower, &500_000, &(MAX_VOUCHERS_PER_LOAN as i128 * 1_000_000));
+
+        // Repay
+        client.repay(&borrower);
+
+        // Check loan is repaid
+        let loan = client.get_loan(&borrower).unwrap();
+        assert!(loan.repaid);
     }
 }
