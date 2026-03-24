@@ -12,6 +12,10 @@ use reputation::ReputationNftContractClient;
 
 const DEFAULT_YIELD_BPS: i128 = 200;
 const DEFAULT_SLASH_BPS: i128 = 5000;
+const _: () = assert!(
+    DEFAULT_SLASH_BPS <= 10_000,
+    "DEFAULT_SLASH_BPS must not exceed 10_000"
+);
 const DEFAULT_MAX_VOUCHERS: u32 = 100;
 const DEFAULT_MIN_LOAN_AMOUNT: i128 = 100_000;
 const DEFAULT_LOAN_DURATION: u64 = 30 * 24 * 60 * 60;
@@ -53,7 +57,9 @@ pub enum DataKey {
     Paused,           // bool: true when contract is paused
     ReputationNft,    // Address of the ReputationNftContract
     Config,           // Config struct: all configurable protocol parameters
-    ReputationNft,    // Address of the ReputationNftContract
+    YieldBps,         // i128 yield in basis points
+    SlashBps,         // i128 slash penalty in basis points
+    PendingAdmin,     // Address of the pending admin (two-step transfer)
 }
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -137,8 +143,14 @@ impl QuorumCreditContract {
             !env.storage().instance().has(&DataKey::Admin),
             "already initialized"
         );
-        assert!(yield_bps > 0 && yield_bps <= 10_000, "yield_bps must be in range 1..=10000");
-        assert!(slash_bps > 0 && slash_bps <= 10_000, "slash_bps must be in range 1..=10000");
+        assert!(
+            DEFAULT_YIELD_BPS > 0 && DEFAULT_YIELD_BPS <= 10_000,
+            "yield_bps must be in range 1..=10000"
+        );
+        assert!(
+            DEFAULT_SLASH_BPS > 0 && DEFAULT_SLASH_BPS <= 10_000,
+            "slash_bps must be in range 1..=10000"
+        );
 
         env.storage().instance().set(&DataKey::Deployer, &deployer);
         env.storage().instance().set(&DataKey::Admin, &admin);
@@ -341,12 +353,6 @@ impl QuorumCreditContract {
             .get(&DataKey::Vouches(borrower.clone()))
             .unwrap_or(Vec::new(&env));
 
-        let yield_bps: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::YieldBps)
-            .expect("not initialized");
-
         // Pre-calculate total payout to ensure contract has enough balance.
         let mut total_payout: i128 = 0;
         for v in vouches.iter() {
@@ -416,12 +422,6 @@ impl QuorumCreditContract {
             .persistent()
             .get(&DataKey::Vouches(borrower.clone()))
             .unwrap_or(Vec::new(&env));
-
-        let slash_bps: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::SlashBps)
-            .expect("not initialized");
 
         for v in vouches.iter() {
             let slash_amount = v.stake * cfg.slash_bps / 10_000;
@@ -592,12 +592,6 @@ impl QuorumCreditContract {
             .get(&DataKey::Vouches(borrower.clone()))
             .unwrap_or(Vec::new(&env));
 
-        let slash_bps: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::SlashBps)
-            .expect("not initialized");
-
         for v in vouches.iter() {
             let slash_amount = v.stake * cfg.slash_bps / 10_000;
             let returned = v.stake - slash_amount;
@@ -705,7 +699,9 @@ impl QuorumCreditContract {
             .get(&DataKey::Admin)
             .expect("not initialized");
         admin.require_auth();
-        env.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
         env.events().publish(("AdminProposed",), (admin, new_admin));
     }
 
@@ -726,7 +722,8 @@ impl QuorumCreditContract {
 
         env.storage().instance().set(&DataKey::Admin, &pending);
         env.storage().instance().remove(&DataKey::PendingAdmin);
-        env.events().publish(("AdminUpdated",), (old_admin, pending));
+        env.events()
+            .publish(("AdminUpdated",), (old_admin, pending));
     }
 
     // ── Views ─────────────────────────────────────────────────────────────────
@@ -1767,5 +1764,30 @@ mod tests {
 
         // No NFT contract configured — should return 0 gracefully.
         assert_eq!(client.get_reputation(&borrower), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "slash_bps must be 1-10000")]
+    fn test_set_config_slash_bps_above_10000_rejected() {
+        let env = Env::default();
+        let (contract_id, _token_addr, _admin, _borrower, _voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        let mut cfg = client.get_config();
+        cfg.slash_bps = 10_001;
+        client.set_config(&cfg);
+    }
+
+    #[test]
+    fn test_set_config_slash_bps_at_boundary_10000_accepted() {
+        let env = Env::default();
+        let (contract_id, _token_addr, _admin, _borrower, _voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        let mut cfg = client.get_config();
+        cfg.slash_bps = 10_000;
+        client.set_config(&cfg);
+
+        assert_eq!(client.get_config().slash_bps, 10_000);
     }
 }
