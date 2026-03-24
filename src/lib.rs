@@ -40,6 +40,7 @@ pub enum DataKey {
     LoanDuration,     // u64 configurable loan duration in seconds
     CreditHistory(Address), // borrower → CreditHistory
     YieldBps,               // i128 yield rate in basis points
+}
 
 // ── Data Types ────────────────────────────────────────────────────────────────
 
@@ -1129,6 +1130,18 @@ mod tests {
     }
 
     // ── Yield BPS Tests ───────────────────────────────────────────────────────
+
+    #[test]
+    #[should_panic(expected = "yield_bps must be in range 1..=10000")]
+    fn test_initialize_rejects_yield_bps_above_10000() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(admin.clone());
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        QuorumCreditContractClient::new(&env, &contract_id)
+            .initialize(&admin, &admin, &token_id.address(), &150, &10_001);
+    }
 
     #[test]
     fn test_yield_bps_stored_on_initialize() {
