@@ -31,6 +31,7 @@ pub enum ContractError {
     NoActiveLoan = 3,
     ContractPaused = 4,
     LoanPastDeadline = 5,
+    UnauthorizedCaller = 6,
 }
 
 // ── Loan Status ───────────────────────────────────────────────────────────────
@@ -336,6 +337,9 @@ impl QuorumCreditContract {
             .get(&DataKey::Loan(borrower.clone()))
             .ok_or(ContractError::NoActiveLoan)?;
 
+        if borrower != loan.borrower {
+            return Err(ContractError::UnauthorizedCaller);
+        }
         assert!(!loan.defaulted, "loan already defaulted");
         assert!(!loan.repaid, "loan already repaid");
 
@@ -1026,6 +1030,38 @@ mod tests {
         client.repay(&borrower);
 
         assert_eq!(token.balance(&voucher), 10_020_000);
+    }
+
+    #[test]
+    fn test_repay_mismatched_borrower_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let borrower = Address::generate(&env);
+        let voucher = Address::generate(&env);
+        let attacker = Address::generate(&env);
+
+        let token_id = env.register_stellar_asset_contract_v2(admin.clone());
+        let token_admin = StellarAssetClient::new(&env, &token_id.address());
+        token_admin.mint(&voucher, &10_000_000);
+
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        token_admin.mint(&contract_id, &50_000_000);
+        token_admin.mint(&attacker, &10_000_000);
+
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &admin, &token_id.address());
+        client.vouch(&voucher, &borrower, &1_000_000);
+        client.request_loan(&borrower, &500_000, &1_000_000);
+
+        // attacker tries to repay borrower's loan — must be rejected
+        // because attacker != loan.borrower
+        let result = client.try_repay(&attacker);
+        assert_eq!(result, Err(Ok(ContractError::NoActiveLoan)));
+
+        // also verify borrower can still repay their own loan
+        client.repay(&borrower);
     }
 
     #[test]
