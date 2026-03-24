@@ -533,18 +533,18 @@
                     },
                     {
                       "key": {
-                        "symbol": "defaulted"
+                        "symbol": "deadline"
                       },
                       "val": {
-                        "bool": false
+                        "u64": 2592000
                       }
                     },
                     {
                       "key": {
-                        "symbol": "expires_at"
+                        "symbol": "defaulted"
                       },
                       "val": {
-                        "u64": 2592000
+                        "bool": false
                       }
                     },
                     {

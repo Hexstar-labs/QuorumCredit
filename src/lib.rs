@@ -24,6 +24,7 @@ pub enum ContractError {
     DuplicateVouch = 2,
     NoActiveLoan = 3,
     ContractPaused = 4,
+    LoanPastDeadline = 5,
 }
 
 // ── Storage Keys ──────────────────────────────────────────────────────────────
@@ -37,6 +38,7 @@ pub enum DataKey {
     Deployer,         // Address that deployed the contract; guards initialize
     SlashTreasury,    // i128 accumulated slashed funds
     Paused,           // bool: true when contract is paused
+    LoanDuration,     // u64 configurable loan duration in seconds
 }
 
 // ── Data Types ────────────────────────────────────────────────────────────────
@@ -49,7 +51,7 @@ pub struct LoanRecord {
     pub repaid: bool,
     pub defaulted: bool,
     pub created_at: u64, // ledger timestamp
-    pub expires_at: u64, // ledger timestamp
+    pub deadline: u64,   // repayment deadline (ledger timestamp)
 }
 
 #[contracttype]
@@ -169,7 +171,12 @@ impl QuorumCreditContract {
         }
 
         let now = env.ledger().timestamp();
-        let expires_at = now + LOAN_EXPIRY_SECONDS;
+        let duration: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LoanDuration)
+            .unwrap_or(LOAN_EXPIRY_SECONDS);
+        let deadline = now + duration;
 
         env.storage().persistent().set(
             &DataKey::Loan(borrower.clone()),
@@ -179,7 +186,7 @@ impl QuorumCreditContract {
                 repaid: false,
                 defaulted: false,
                 created_at: now,
-                expires_at,
+                deadline,
             },
         );
 
@@ -202,6 +209,12 @@ impl QuorumCreditContract {
 
         assert!(!loan.defaulted, "loan already defaulted");
         assert!(!loan.repaid, "loan already repaid");
+
+        // Block repayment after deadline — borrower must be auto-slashed instead.
+        assert!(
+            env.ledger().timestamp() <= loan.deadline,
+            "loan deadline has passed"
+        );
 
         let token = Self::token(&env);
         let vouches: Vec<VouchRecord> = env
@@ -311,7 +324,7 @@ impl QuorumCreditContract {
         assert!(!loan.defaulted, "loan already defaulted");
 
         let now = env.ledger().timestamp();
-        assert!(now >= loan.expires_at, "loan has not expired yet");
+        assert!(now >= loan.deadline, "loan has not expired yet");
 
         // Return full stake to all vouchers.
         let token = Self::token(&env);
@@ -402,6 +415,79 @@ impl QuorumCreditContract {
 
         // Return exact stake to voucher.
         Self::token(&env).transfer(&env.current_contract_address(), &voucher, &stake);
+    }
+
+    // ── Loan Deadline ─────────────────────────────────────────────────────────
+
+    /// Callable by anyone after the loan deadline has passed.
+    /// Applies the standard slash penalty (50% of each voucher's stake burned).
+    pub fn auto_slash(env: Env, borrower: Address) {
+        let mut loan: LoanRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Loan(borrower.clone()))
+            .expect("no active loan");
+
+        assert!(!loan.repaid, "loan already repaid");
+        assert!(!loan.defaulted, "loan already defaulted");
+        assert!(
+            env.ledger().timestamp() > loan.deadline,
+            "loan deadline has not passed"
+        );
+
+        let token = Self::token(&env);
+        let vouches: Vec<VouchRecord> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Vouches(borrower.clone()))
+            .unwrap_or(Vec::new(&env));
+
+        for v in vouches.iter() {
+            let slash_amount = v.stake * SLASH_BPS / 10_000;
+            let returned = v.stake - slash_amount;
+            if returned > 0 {
+                token.transfer(&env.current_contract_address(), &v.voucher, &returned);
+            }
+            let treasury: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::SlashTreasury)
+                .unwrap_or(0);
+            env.storage()
+                .instance()
+                .set(&DataKey::SlashTreasury, &(treasury + slash_amount));
+        }
+
+        loan.defaulted = true;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Loan(borrower.clone()), &loan);
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Vouches(borrower));
+    }
+
+    /// Admin sets the loan duration (in seconds) applied to future loans.
+    pub fn set_loan_duration(env: Env, duration_seconds: u64) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("not initialized");
+        admin.require_auth();
+        assert!(duration_seconds > 0, "duration must be greater than zero");
+        env.storage()
+            .instance()
+            .set(&DataKey::LoanDuration, &duration_seconds);
+    }
+
+    /// Returns the current loan duration in seconds.
+    pub fn get_loan_duration(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::LoanDuration)
+            .unwrap_or(LOAN_EXPIRY_SECONDS)
     }
 
     // ── Admin: Pause / Unpause ────────────────────────────────────────────────
@@ -528,7 +614,7 @@ mod tests {
         assert!(!loan.repaid);
         assert!(!loan.defaulted);
         assert!(loan.created_at > 0);
-        assert!(loan.expires_at > loan.created_at);
+        assert!(loan.deadline > loan.created_at);
     }
 
     #[test]
@@ -836,5 +922,92 @@ mod tests {
         client.vouch(&voucher, &borrower, &1_000_000);
         let vouches = client.get_vouches(&borrower).unwrap();
         assert_eq!(vouches.len(), 1);
+    }
+
+    // ── Loan Deadline / Auto-Slash Tests ──────────────────────────────────────
+
+    #[test]
+    fn test_deadline_set_from_loan_duration() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_000_000);
+        let (contract_id, _token_addr, _admin, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        // Set a short custom duration: 1000 seconds.
+        client.set_loan_duration(&1_000);
+        assert_eq!(client.get_loan_duration(), 1_000);
+
+        client.vouch(&voucher, &borrower, &1_000_000);
+        client.request_loan(&borrower, &500_000, &1_000_000);
+
+        let loan = client.get_loan(&borrower).unwrap();
+        assert_eq!(loan.deadline, 1_000_000 + 1_000);
+    }
+
+    #[test]
+    fn test_auto_slash_after_deadline() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_000_000);
+        let (contract_id, token_addr, _admin, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        let token = TokenClient::new(&env, &token_addr);
+
+        client.set_loan_duration(&1_000);
+        client.vouch(&voucher, &borrower, &1_000_000);
+        client.request_loan(&borrower, &500_000, &1_000_000);
+
+        // Advance time past the deadline.
+        env.ledger().set_timestamp(1_002_000);
+
+        // Anyone can call auto_slash — use a random caller (mock_all_auths covers it).
+        client.auto_slash(&borrower);
+
+        let loan = client.get_loan(&borrower).unwrap();
+        assert!(loan.defaulted);
+        // 50% slashed: voucher gets back 500_000 of their 1_000_000 stake.
+        assert_eq!(token.balance(&voucher), 9_500_000);
+        assert_eq!(client.get_slash_treasury(), 500_000);
+    }
+
+    #[test]
+    #[should_panic(expected = "loan deadline has not passed")]
+    fn test_auto_slash_before_deadline_panics() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_000_000);
+        let (contract_id, _token_addr, _admin, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        client.set_loan_duration(&1_000);
+        client.vouch(&voucher, &borrower, &1_000_000);
+        client.request_loan(&borrower, &500_000, &1_000_000);
+
+        // Still within deadline — should panic.
+        client.auto_slash(&borrower);
+    }
+
+    #[test]
+    #[should_panic(expected = "loan deadline has passed")]
+    fn test_repay_after_deadline_panics() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_000_000);
+        let (contract_id, _token_addr, _admin, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        client.set_loan_duration(&1_000);
+        client.vouch(&voucher, &borrower, &1_000_000);
+        client.request_loan(&borrower, &500_000, &1_000_000);
+
+        // Advance past deadline.
+        env.ledger().set_timestamp(1_002_000);
+        client.repay(&borrower);
+    }
+
+    #[test]
+    fn test_default_loan_duration_is_30_days() {
+        let env = Env::default();
+        let (contract_id, _token_addr, _admin, _borrower, _voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        assert_eq!(client.get_loan_duration(), LOAN_EXPIRY_SECONDS);
     }
 }
