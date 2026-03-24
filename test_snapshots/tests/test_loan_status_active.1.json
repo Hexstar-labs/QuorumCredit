@@ -90,9 +90,6 @@
                 },
                 {
                   "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
-                },
-                {
-                  "u32": 150
                 }
               ]
             }
@@ -627,24 +624,82 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "Deployer"
+                              "symbol": "Config"
                             }
                           ]
                         },
                         "val": {
-                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                          "map": [
+                            {
+                              "key": {
+                                "symbol": "loan_duration"
+                              },
+                              "val": {
+                                "u64": 2592000
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "max_loan_to_stake_ratio"
+                              },
+                              "val": {
+                                "u32": 150
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "max_vouchers"
+                              },
+                              "val": {
+                                "u32": 100
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "min_loan_amount"
+                              },
+                              "val": {
+                                "i128": {
+                                  "hi": 0,
+                                  "lo": 100000
+                                }
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "slash_bps"
+                              },
+                              "val": {
+                                "i128": {
+                                  "hi": 0,
+                                  "lo": 5000
+                                }
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "yield_bps"
+                              },
+                              "val": {
+                                "i128": {
+                                  "hi": 0,
+                                  "lo": 200
+                                }
+                              }
+                            }
+                          ]
                         }
                       },
                       {
                         "key": {
                           "vec": [
                             {
-                              "symbol": "MaxLoanToStakeRatio"
+                              "symbol": "Deployer"
                             }
                           ]
                         },
                         "val": {
-                          "u32": 150
+                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
                         }
                       },
                       {
@@ -1350,9 +1405,6 @@
                 },
                 {
                   "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
-                },
-                {
-                  "u32": 150
                 }
               ]
             }
@@ -1508,6 +1560,42 @@
               }
             ],
             "data": "void"
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000005",
+        "type_": "contract",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "vouch"
+              },
+              {
+                "symbol": "added"
+              }
+            ],
+            "data": {
+              "vec": [
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                },
+                {
+                  "i128": {
+                    "hi": 0,
+                    "lo": 1000000
+                  }
+                }
+              ]
+            }
           }
         }
       },
@@ -1715,6 +1803,42 @@
               }
             ],
             "data": "void"
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000005",
+        "type_": "contract",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "loan"
+              },
+              {
+                "symbol": "disbursed"
+              }
+            ],
+            "data": {
+              "vec": [
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                },
+                {
+                  "i128": {
+                    "hi": 0,
+                    "lo": 500000
+                  }
+                },
+                {
+                  "u64": 3592000
+                }
+              ]
+            }
           }
         }
       },

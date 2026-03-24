@@ -121,12 +121,7 @@ impl QuorumCreditContract {
     /// sign this transaction. This prevents front-running attacks where an
     /// observer of the deployment transaction calls `initialize` first with
     /// their own admin address before the legitimate deployer can do so.
-    pub fn initialize(
-        env: Env,
-        deployer: Address,
-        admin: Address,
-        token: Address,
-    ) {
+    pub fn initialize(env: Env, deployer: Address, admin: Address, token: Address) {
         // Require the deployer's signature — only they can authorise this call.
         deployer.require_auth();
 
@@ -138,7 +133,9 @@ impl QuorumCreditContract {
         env.storage().instance().set(&DataKey::Deployer, &deployer);
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Token, &token);
-        env.storage().instance().set(&DataKey::Config, &Config::default());
+        env.storage()
+            .instance()
+            .set(&DataKey::Config, &Config::default());
     }
 
     /// Stake XLM to vouch for a borrower.
@@ -613,11 +610,26 @@ impl QuorumCreditContract {
             .expect("not initialized");
         admin.require_auth();
         assert!(config.yield_bps >= 0, "yield_bps must be non-negative");
-        assert!(config.slash_bps > 0 && config.slash_bps <= 10_000, "slash_bps must be 1-10000");
-        assert!(config.max_vouchers > 0, "max_vouchers must be greater than zero");
-        assert!(config.min_loan_amount > 0, "min_loan_amount must be greater than zero");
-        assert!(config.loan_duration > 0, "loan_duration must be greater than zero");
-        assert!(config.max_loan_to_stake_ratio > 0, "max_loan_to_stake_ratio must be greater than zero");
+        assert!(
+            config.slash_bps > 0 && config.slash_bps <= 10_000,
+            "slash_bps must be 1-10000"
+        );
+        assert!(
+            config.max_vouchers > 0,
+            "max_vouchers must be greater than zero"
+        );
+        assert!(
+            config.min_loan_amount > 0,
+            "min_loan_amount must be greater than zero"
+        );
+        assert!(
+            config.loan_duration > 0,
+            "loan_duration must be greater than zero"
+        );
+        assert!(
+            config.max_loan_to_stake_ratio > 0,
+            "max_loan_to_stake_ratio must be greater than zero"
+        );
         env.storage().instance().set(&DataKey::Config, &config);
     }
 
@@ -1350,7 +1362,11 @@ mod tests {
         let client = QuorumCreditContractClient::new(&env, &contract_id);
         let token = TokenClient::new(&env, &token_addr);
 
-        client.set_config(&{ let mut c = client.get_config(); c.loan_duration = 1_000; c });
+        client.set_config(&{
+            let mut c = client.get_config();
+            c.loan_duration = 1_000;
+            c
+        });
         client.vouch(&voucher, &borrower, &1_000_000);
         client.request_loan(&borrower, &500_000, &1_000_000);
 
@@ -1375,7 +1391,11 @@ mod tests {
         let (contract_id, _token_addr, _admin, borrower, voucher) = setup(&env);
         let client = QuorumCreditContractClient::new(&env, &contract_id);
 
-        client.set_config(&{ let mut c = client.get_config(); c.loan_duration = 1_000; c });
+        client.set_config(&{
+            let mut c = client.get_config();
+            c.loan_duration = 1_000;
+            c
+        });
         client.vouch(&voucher, &borrower, &1_000_000);
         client.request_loan(&borrower, &500_000, &1_000_000);
 
@@ -1391,7 +1411,11 @@ mod tests {
         let (contract_id, _token_addr, _admin, borrower, voucher) = setup(&env);
         let client = QuorumCreditContractClient::new(&env, &contract_id);
 
-        client.set_config(&{ let mut c = client.get_config(); c.loan_duration = 1_000; c });
+        client.set_config(&{
+            let mut c = client.get_config();
+            c.loan_duration = 1_000;
+            c
+        });
         client.vouch(&voucher, &borrower, &1_000_000);
         client.request_loan(&borrower, &500_000, &1_000_000);
 
@@ -1496,15 +1520,12 @@ mod tests {
 
     // ── Reputation NFT Tests ──────────────────────────────────────────────────
 
-    fn setup_with_reputation(
-        env: &Env,
-    ) -> (Address, Address, Address, Address, Address, Address) {
+    fn setup_with_reputation(env: &Env) -> (Address, Address, Address, Address, Address, Address) {
         let (contract_id, token_addr, admin, borrower, voucher) = setup(env);
         let client = QuorumCreditContractClient::new(env, &contract_id);
 
         let nft_id = env.register_contract(None, reputation::ReputationNftContract);
-        reputation::ReputationNftContractClient::new(env, &nft_id)
-            .initialize(&contract_id);
+        reputation::ReputationNftContractClient::new(env, &nft_id).initialize(&contract_id);
         client.set_reputation_nft(&nft_id);
 
         (contract_id, token_addr, admin, borrower, voucher, nft_id)
@@ -1513,8 +1534,7 @@ mod tests {
     #[test]
     fn test_repay_mints_reputation() {
         let env = Env::default();
-        let (contract_id, _token, _admin, borrower, voucher, nft_id) =
-            setup_with_reputation(&env);
+        let (contract_id, _token, _admin, borrower, voucher, nft_id) = setup_with_reputation(&env);
         let client = QuorumCreditContractClient::new(&env, &contract_id);
         let nft = reputation::ReputationNftContractClient::new(&env, &nft_id);
 
@@ -1563,8 +1583,7 @@ mod tests {
     #[test]
     fn test_slash_burn_floors_at_zero() {
         let env = Env::default();
-        let (contract_id, _token, _admin, borrower, voucher, _nft_id) =
-            setup_with_reputation(&env);
+        let (contract_id, _token, _admin, borrower, voucher, _nft_id) = setup_with_reputation(&env);
         let client = QuorumCreditContractClient::new(&env, &contract_id);
 
         // Default immediately with score = 0 — should not underflow.
@@ -1640,9 +1659,8 @@ mod tests {
     #[test]
     fn test_config_slash_bps_applied_on_slash() {
         let env = Env::default();
-        let (contract_id, token_addr, _, borrower, voucher) = setup(&env);
+        let (contract_id, _token_addr, _, borrower, voucher) = setup(&env);
         let client = QuorumCreditContractClient::new(&env, &contract_id);
-        let token = TokenClient::new(&env, &token_addr);
 
         // Set slash to 25% (2500 bps).
         let mut cfg = client.get_config();
