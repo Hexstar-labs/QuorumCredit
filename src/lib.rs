@@ -48,6 +48,7 @@ pub enum ContractError {
     LoanExceedsMaxAmount = 11,
     InsufficientVouchers = 12,
     UnauthorizedCaller = 13,
+    Blacklisted = 14,
 }
 
 // ── Loan Status ───────────────────────────────────────────────────────────────
@@ -81,6 +82,7 @@ pub enum DataKey {
     PendingAdmin,            // Address of the pending admin (two-step transfer)
     RepaymentCount(Address), // borrower → u32 total successful repayments
     ProtocolFeeBps,          // u32: protocol fee in basis points
+    Blacklisted(Address),    // borrower → bool: permanently banned from borrowing
 }
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -443,6 +445,15 @@ impl QuorumCreditContract {
             cb.require_auth();
         }
         Self::require_not_paused(&env)?;
+
+        if env
+            .storage()
+            .persistent()
+            .get::<DataKey, bool>(&DataKey::Blacklisted(borrower.clone()))
+            .unwrap_or(false)
+        {
+            return Err(ContractError::Blacklisted);
+        }
 
         let cfg = Self::config(&env);
 
@@ -895,6 +906,22 @@ impl QuorumCreditContract {
     }
 
     // ── Admin Setters ─────────────────────────────────────────────────────────
+
+    /// Admin permanently bans a borrower from requesting future loans.
+    pub fn blacklist(env: Env, admin_signers: Vec<Address>, borrower: Address) {
+        Self::require_admin_approval(&env, &admin_signers);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Blacklisted(borrower), &true);
+    }
+
+    /// Returns true if the borrower has been permanently blacklisted.
+    pub fn is_blacklisted(env: Env, borrower: Address) -> bool {
+        env.storage()
+            .persistent()
+            .get::<DataKey, bool>(&DataKey::Blacklisted(borrower))
+            .unwrap_or(false)
+    }
 
     /// Admin sets the minimum stake amount required per vouch (in stroops).
     pub fn set_min_stake(env: Env, admin_signers: Vec<Address>, amount: i128) {
@@ -3366,5 +3393,45 @@ mod tests {
         let client = QuorumCreditContractClient::new(&env, &contract_id);
 
         assert!(client.get_loan_pool(&999u64).is_none());
+    }
+
+    // ── Blacklist Tests ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_is_blacklisted_defaults_to_false() {
+        let env = Env::default();
+        let (contract_id, _, _, borrower, _) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        assert!(!client.is_blacklisted(&borrower));
+    }
+
+    #[test]
+    fn test_blacklist_prevents_loan_request() {
+        let env = Env::default();
+        let (contract_id, _, admin, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        let admin_signers = single_admin_signers(&env, &admin);
+
+        client.vouch(&voucher, &borrower, &1_000_000);
+        client.blacklist(&admin_signers, &borrower);
+
+        assert!(client.is_blacklisted(&borrower));
+
+        let result = client.try_request_loan(&borrower, &Vec::new(&env), &500_000, &1_000_000);
+        assert_eq!(result, Err(Ok(ContractError::Blacklisted)));
+    }
+
+    #[test]
+    fn test_non_admin_cannot_blacklist() {
+        let env = Env::default();
+        let (contract_id, _, _, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        // voucher is not an admin — should panic with unauthorized admin signer
+        let non_admin_signers = single_admin_signers(&env, &voucher);
+        let result = client.try_blacklist(&non_admin_signers, &borrower);
+        assert!(result.is_err());
+        assert!(!client.is_blacklisted(&borrower));
     }
 }
