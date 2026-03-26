@@ -677,6 +677,7 @@ impl QuorumCreditContract {
             if returned > 0 {
                 token.transfer(&env.current_contract_address(), &v.voucher, &returned);
             }
+            Self::add_slash_balance(&env, slash_amount);
             total_slashed += slash_amount;
         }
 
@@ -939,14 +940,7 @@ impl QuorumCreditContract {
         for v in vouches.iter() {
             total_slash += v.stake * cfg.slash_bps / 10_000;
         }
-        let treasury: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::SlashTreasury)
-            .unwrap_or(0);
-        env.storage()
-            .instance()
-            .set(&DataKey::SlashTreasury, &(treasury + total_slash));
+        Self::add_slash_balance(&env, total_slash);
 
         // ── INTERACTIONS ──────────────────────────────────────────────────────
         let token = Self::token(&env);
@@ -1111,7 +1105,7 @@ impl QuorumCreditContract {
         Self::config(&env).admin_threshold
     }
 
-    pub fn get_slash_treasury(env: Env) -> i128 {
+    pub fn get_slash_treasury_balance(env: Env) -> i128 {
         env.storage()
             .instance()
             .get(&DataKey::SlashTreasury)
@@ -1416,6 +1410,17 @@ impl QuorumCreditContract {
             .instance()
             .get(&DataKey::Config)
             .expect("not initialized")
+    }
+
+    fn add_slash_balance(env: &Env, amount: i128) {
+        let current: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::SlashTreasury)
+            .unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&DataKey::SlashTreasury, &(current + amount));
     }
 
     fn has_active_loan(env: &Env, borrower: &Address) -> bool {
@@ -3432,5 +3437,37 @@ mod tests {
         assert!(client.vouch_exists(&from, &borrower));
         assert_eq!(client.get_vouches(&borrower).unwrap().len(), 1);
     }
+
+    #[test]
+    fn test_slash_treasury_accumulation() {
+        let env = Env::default();
+        let (contract_id, _token_addr, admin, borrower1, voucher) = setup(&env);
+        let borrower2 = Address::generate(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        let admin_signers = single_admin_signers(&env, &admin);
+
+        // Initial balance should be 0
+        assert_eq!(client.get_slash_treasury_balance(), 0);
+
+        // First slash (manual admin slash)
+        client.vouch(&voucher, &borrower1, &1_000_000);
+        client.request_loan(&borrower1, &Vec::new(&env), &500_000, &1_000_000);
+        client.slash(&admin_signers, &borrower1);
+
+        // Stake was 1M, slash_bps is 5000 (50%), so 500k slashed
+        assert_eq!(client.get_slash_treasury_balance(), 500_000);
+
+        // Second slash (auto_slash after deadline)
+        client.vouch(&voucher, &borrower2, &2_000_000);
+        client.request_loan(&borrower2, &Vec::new(&env), &1_000_000, &2_000_000);
+        
+        let loan = client.get_loan(&borrower2).unwrap();
+        env.ledger().set_timestamp(loan.deadline + 1);
+        client.auto_slash(&borrower2);
+
+        // Stake was 2M, 50% is 1M. Total: 500k + 1M = 1.5M
+        assert_eq!(client.get_slash_treasury_balance(), 1_500_000);
+    }
+
 
 }
