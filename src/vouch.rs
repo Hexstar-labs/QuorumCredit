@@ -28,6 +28,16 @@ fn do_vouch(
     assert!(voucher != borrower, "voucher cannot vouch for self");
     assert!(stake > 0, "stake must be greater than zero");
 
+    // Check if borrower is blacklisted
+    if env
+        .storage()
+        .persistent()
+        .get::<DataKey, bool>(&DataKey::Blacklisted(borrower.clone()))
+        .unwrap_or(false)
+    {
+        return Err(ContractError::Blacklisted);
+    }
+
     // Validate token is allowed.
     let token_client = require_allowed_token(env, &token)?;
 
@@ -478,5 +488,32 @@ mod tests {
         // Test that total_vouched returns correct sum
         let result = client.total_vouched(&borrower);
         assert_eq!(result, 3_500_000);
+    }
+
+    #[test]
+    fn test_vouch_blacklisted_borrower() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        let deployer = Address::generate(&env);
+        let admin = create_test_admin(&env);
+        let admins = Vec::from_array(&env, [admin.clone()]);
+        let token = create_test_token(&env);
+
+        client.initialize(&deployer, &admins, &1, &token);
+
+        let voucher = Address::generate(&env);
+        let borrower = Address::generate(&env);
+        let stake = 1_000_000;
+
+        // Blacklist the borrower
+        client.blacklist(&Vec::from_array(&env, [admin]), &borrower);
+
+        // Attempt to vouch for blacklisted borrower should fail
+        let result = client.try_vouch(&voucher, &borrower, &stake, &token);
+        assert_eq!(result, Err(Ok(ContractError::Blacklisted)));
     }
 }
