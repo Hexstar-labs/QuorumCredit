@@ -32,6 +32,8 @@ mod security_fixes_test;
 mod bug_condition_test;
 #[cfg(test)]
 mod duplicate_loan_test;
+#[cfg(test)]
+mod get_loan_none_test;
 
 #[cfg(test)]
 mod slash_multi_voucher_test;
