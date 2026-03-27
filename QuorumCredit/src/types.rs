@@ -14,7 +14,6 @@ pub const DEFAULT_MIN_LOAN_AMOUNT: i128 = 100_000;
 pub const DEFAULT_LOAN_DURATION: u64 = 30 * 24 * 60 * 60;
 pub const DEFAULT_MAX_LOAN_TO_STAKE_RATIO: u32 = 150;
 pub const DEFAULT_VOUCH_COOLDOWN_SECS: u64 = 24 * 60 * 60; // 24 hours
-pub const DEFAULT_MAX_VOUCHERS_PER_BORROWER: u32 = 50;
 pub const TIMELOCK_DELAY: u64 = 24 * 60 * 60;
 pub const TIMELOCK_EXPIRY: u64 = 72 * 60 * 60;
 
@@ -66,7 +65,6 @@ pub enum DataKey {
     SlashVoteQuorum,            // u32 quorum in basis points (e.g. 5000 = 50%)
     ReferredBy(Address),        // borrower → Address of referrer
     ReferralBonusBps,           // u32 referral bonus in basis points (default 100 = 1%)
-    MaxVouchersPerBorrower,     // u32 maximum number of vouchers per borrower (default 50)
 }
 
 // ── Governance ────────────────────────────────────────────────────────────────

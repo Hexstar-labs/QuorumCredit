@@ -66,9 +66,10 @@ pub fn request_loan(
 
     let cfg = config(&env);
 
-    if amount < cfg.min_loan_amount {
-        return Err(ContractError::LoanBelowMinAmount);
-    }
+    assert!(
+        amount >= cfg.min_loan_amount,
+        "loan amount must meet minimum threshold"
+    );
     assert!(threshold > 0, "threshold must be greater than zero");
 
     let max_loan_amount: i128 = env
@@ -188,7 +189,20 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
     borrower.require_auth();
     require_not_paused(&env)?;
 
-    let mut loan = get_active_loan_record(&env, &borrower)?;
+    // First try to get active loan record
+    let mut loan = match get_active_loan_record(&env, &borrower) {
+        Ok(loan) => loan,
+        Err(ContractError::NoActiveLoan) => {
+            // Check if there's a latest loan that is already repaid
+            if let Some(latest_loan) = crate::helpers::get_latest_loan_record(&env, &borrower) {
+                if latest_loan.status == LoanStatus::Repaid {
+                    panic!("loan already repaid");
+                }
+            }
+            return Err(ContractError::NoActiveLoan);
+        }
+        Err(e) => return Err(e),
+    };
 
     for cb in loan.co_borrowers.iter() {
         cb.require_auth();
@@ -198,7 +212,11 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
         return Err(ContractError::UnauthorizedCaller);
     }
     if loan.status != LoanStatus::Active {
-        return Err(ContractError::NoActiveLoan);
+        if loan.status == LoanStatus::Repaid {
+            panic!("loan already repaid");
+        } else {
+            return Err(ContractError::NoActiveLoan);
+        }
     }
     assert!(
         env.ledger().timestamp() <= loan.deadline,

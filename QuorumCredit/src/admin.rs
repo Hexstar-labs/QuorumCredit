@@ -372,26 +372,3 @@ pub fn is_whitelisted(env: Env, voucher: Address) -> bool {
         .get(&DataKey::VoucherWhitelist(voucher))
         .unwrap_or(false)
 }
-
-pub fn set_max_vouchers_per_borrower(env: Env, admin_signers: Vec<Address>, max_vouchers: u32) {
-    require_admin_approval(&env, &admin_signers);
-    assert!(max_vouchers > 0, "max_vouchers_per_borrower must be greater than zero");
-    env.storage()
-        .instance()
-        .set(&DataKey::MaxVouchersPerBorrower, &max_vouchers);
-    env.events().publish(
-        (symbol_short!("admin"), symbol_short!("maxvchbr")),
-        (
-            admin_signers.get(0).unwrap(),
-            max_vouchers,
-            env.ledger().timestamp(),
-        ),
-    );
-}
-
-pub fn get_max_vouchers_per_borrower(env: Env) -> u32 {
-    env.storage()
-        .instance()
-        .get(&DataKey::MaxVouchersPerBorrower)
-        .unwrap_or(crate::types::DEFAULT_MAX_VOUCHERS_PER_BORROWER)
-}
