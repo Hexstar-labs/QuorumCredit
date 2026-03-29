@@ -55,6 +55,8 @@ mod security_fixes_tests {
         let token = StellarAssetClient::new(&s.env, &s.token_id);
         token.mint(voucher, &stake);
         s.client.vouch(&voucher, &borrower, &stake, &s.token_id);
+        // Advance time past MIN_VOUCH_AGE (60s) so the vouch is eligible
+        s.env.ledger().with_mut(|l| l.timestamp += 61);
     }
 
     // ── Issue 108: Prevent Borrower from Repaying Another Borrower's Loan ──

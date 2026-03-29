@@ -53,9 +53,8 @@ mod double_repay_tests {
         );
     }
 
-    /// Calling repay twice must panic with "loan already repaid" on the second call.
+    /// Calling repay twice must return AlreadyRepaid error on the second call.
     #[test]
-    #[should_panic(expected = "loan already repaid")]
     fn test_repay_panics_when_loan_already_repaid() {
         let s = setup();
         let borrower = Address::generate(&s.env);
@@ -84,8 +83,9 @@ mod double_repay_tests {
         assert!(loan.is_some(), "loan should exist");
         assert_eq!(loan.unwrap().status, crate::LoanStatus::Repaid);
 
-        // Second repay - must panic with "loan already repaid"
-        s.client.repay(&borrower, &total_owed);
+        // Second repay - must return AlreadyRepaid error
+        let result = s.client.try_repay(&borrower, &total_owed);
+        assert_eq!(result, Err(Ok(crate::ContractError::AlreadyRepaid)));
     }
 
     /// Verify that partial repayments are allowed until loan is fully repaid

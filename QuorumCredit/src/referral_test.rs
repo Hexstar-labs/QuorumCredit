@@ -39,6 +39,8 @@ mod referral_tests {
     fn do_vouch(s: &Setup, voucher: &Address, borrower: &Address, stake: i128) {
         StellarAssetClient::new(&s.env, &s.token).mint(voucher, &stake);
         s.client.vouch(voucher, borrower, &stake, &s.token);
+        // Advance time past MIN_VOUCH_AGE (60s) so the vouch is eligible
+        s.env.ledger().with_mut(|l| l.timestamp += 61);
     }
 
     fn do_loan(s: &Setup, borrower: &Address, amount: i128) {
