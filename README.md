@@ -61,6 +61,11 @@ A borrower becomes eligible once their total vouched stake meets the minimum thr
 | Loan repaid ✅ | Debt cleared, credit history improves | Earn 2% yield on staked XLM |
 | Default ❌ | Flagged, future borrowing restricted | 50% of stake slashed |
 
+> **Minimum stake for yield:** A vouch must be at least **50 stroops** to earn non-zero yield.
+> At the default 2% rate (200 bps), `stake * 200 / 10_000` truncates to zero for any stake
+> under 50 stroops. The contract enforces this minimum in `vouch()` and rejects smaller stakes
+> with a clear error rather than silently paying no yield.
+
 ### The FBA Inspiration
 
 Stellar nodes select their own **Quorum Slice** — a trusted subset of peers. QuorumCredit mirrors this: each borrower's eligibility is determined by their personal trust graph, not a central credit bureau. You aren't trusting a bank; you're trusting a specific slice of your social network.
@@ -90,6 +95,20 @@ QuorumCredit/
 | `slash(borrower)` | Admin marks default; 50% of voucher stakes burned |
 | `get_loan(borrower)` | Read a borrower's active loan record |
 | `get_vouches(borrower)` | Read all vouches for a borrower |
+
+---
+
+## 🛡️ Access Control Matrix
+
+| Function | Role Required | Description | Impact |
+|---|---|---|---|
+| `initialize` | **Deployer** | One-time setup of Admin and Token addresses. | Sets security foundation. |
+| `vouch` | **Voucher** | Stake XLM to back a borrower. | Increases borrower trust score. |
+| `request_loan` | **Borrower** | Withdraw loan funds to borrower wallet. | Disburses capital. |
+| `repay` | **Borrower** | Clear debt and distribute yield to vouchers. | Restores trust and rewards vouchers. |
+| `slash` | **Admin** | Signal default and burn 50% of voucher stakes. | Penalizes default; enforces risk. |
+| `get_loan` | **Anyone** | Read active loan records. | Transparency. |
+| `get_vouches` | **Anyone** | Read voucher lists for a borrower. | Transparency. |
 
 ---
 
@@ -231,6 +250,50 @@ stellar contract deploy \
   --source $DEPLOYER_SECRET_KEY
 ```
 
+### Upgrading the Contract
+
+The `upgrade` function allows the admin (or multisig quorum) to replace the contract WASM after deployment. This is the only path to patching a live vulnerability.
+
+**Upgrade process:**
+
+```
+Step 1: Build the new WASM
+Step 2: (Recommended) Pause the contract to halt user activity
+Step 3: Upload the new WASM and obtain its hash
+Step 4: Call upgrade() — requires admin_threshold signatures
+Step 5: Unpause the contract
+```
+
+```bash
+# Step 1 — Build
+cargo build --target wasm32-unknown-unknown --release
+
+# Step 2 — Pause (recommended)
+stellar contract invoke \
+  --id $CONTRACT_ID --fn pause --network testnet --source $ADMIN_SECRET_KEY \
+  -- --admin_signers '["'$ADMIN_ADDRESS'"]'
+
+# Step 3 — Upload new WASM, capture the returned hash
+NEW_WASM_HASH=$(stellar contract install \
+  --wasm target/wasm32-unknown-unknown/release/quorum_credit.wasm \
+  --network testnet \
+  --source $ADMIN_SECRET_KEY)
+
+# Step 4 — Upgrade (admin_threshold admins must sign)
+stellar contract invoke \
+  --id $CONTRACT_ID --fn upgrade --network testnet --source $ADMIN_SECRET_KEY \
+  -- \
+  --admin_signers '["'$ADMIN_ADDRESS'"]' \
+  --new_wasm_hash $NEW_WASM_HASH
+
+# Step 5 — Unpause
+stellar contract invoke \
+  --id $CONTRACT_ID --fn unpause --network testnet --source $ADMIN_SECRET_KEY \
+  -- --admin_signers '["'$ADMIN_ADDRESS'"]'
+```
+
+> ⚠️ The `upgrade` call requires `admin_threshold` distinct admin signatures — the same multisig quorum used for all other admin operations. A single compromised key cannot unilaterally upgrade the contract.
+
 ---
 
 ## Architecture
@@ -263,29 +326,40 @@ Borrower
 
 ---
 
-## Contributing
+## 💰 Yield Accounting & Solvency
 
-Pull requests are welcome. For major changes, open an issue first.
+QuorumCredit uses a **Sustainable Pre-funding Model** for yield distribution. Unlike many DeFi protocols, yield is not "minted" into existence, ensuring no inflationary pressure on the underlying XLM asset.
 
-```bash
-# Fork and create a branch
-git checkout -b feature/your-feature
+### Funding Source
+Yield is sourced from a dedicated **Yield Reserve** within the contract. For vouchers to earn their 2% yield (`YIELD_BPS = 200`), the contract must be pre-funded by the protocol admin or through external revenue streams (e.g., protocol fees). 
 
-# Format code
-cargo fmt --all
+> [!IMPORTANT]
+> The contract must hold sufficient XLM to cover both the principal repayment and the 2% yield. If the reserve is empty, the protocol cannot disburse rewards.
 
-# Ensure tests pass
-cargo test
+### Solvency & "Hard-Cap" Logic
+To ensure the protocol never owes more than it holds, a **Hard-Cap Solvency** model is enforced:
+1. **Reserve Check**: The protocol only allows loan disbursement if the contract has sufficient liquidity to cover the loan amount.
+2. **Yield Protection**: If the Yield Reserve is depleted, the $2.0\%$ yield accrual effectively halts. In the current implementation, any attempt to pay out yield without sufficient funds will trigger a Soroban `InsufficientFunds` panic, protecting the protocol's integrity.
 
-# Commit and push
-git commit -m "Add: description of changes"
+### Yield Flow Diagram
+
+```mermaid
+graph LR
+    A[Admin/Revenue Source] -->|Pre-funds| B(Yield Reserve)
+    B -->|Allocates| C{Yield Accrual}
+    C -->|Repayment Event| D[Voucher Stake + 2% Yield]
+    D -->|Withdrawal| E(User Wallet)
 ```
 
-**Standards:**
-- All new features must include tests
-- Run `cargo fmt --all` before committing
-- Update this README for any interface changes
-- Security implications must be reviewed before merging
+## Contributing
+
+Contributions are what make the open-source community such an amazing place to learn, inspire, and create. Any contributions you make are **greatly appreciated**.
+
+Please refer to [CONTRIBUTING.md](CONTRIBUTING.md) for our full guidelines on:
+- Branch naming conventions
+- Commit message formats (Conventional Commits)
+- Pull Request workflow
+- Testing and Style guides
 
 ---
 
