@@ -424,3 +424,33 @@ pub fn get_max_vouchers_per_borrower(env: Env) -> u32 {
         .get(&DataKey::MaxVouchersPerBorrower)
         .unwrap_or(crate::types::DEFAULT_MAX_VOUCHERS_PER_BORROWER)
 }
+
+pub fn withdraw_slash_treasury(
+    env: Env,
+    admin_signers: Vec<Address>,
+    recipient: Address,
+    amount: i128,
+) {
+    require_admin_approval(&env, &admin_signers);
+    assert!(amount > 0, "amount must be greater than zero");
+
+    let balance: i128 = env
+        .storage()
+        .instance()
+        .get(&DataKey::SlashTreasury)
+        .unwrap_or(0);
+    assert!(balance >= amount, "insufficient slash treasury balance");
+
+    env.storage()
+        .instance()
+        .set(&DataKey::SlashTreasury, &(balance - amount));
+
+    let cfg = config(&env);
+    soroban_sdk::token::Client::new(&env, &cfg.token)
+        .transfer(&env.current_contract_address(), &recipient, &amount);
+
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("slshwdraw")),
+        (admin_signers.get(0).unwrap(), recipient, amount),
+    );
+}
