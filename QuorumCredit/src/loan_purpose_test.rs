@@ -29,6 +29,9 @@ mod loan_purpose_tests {
         StellarAssetClient::new(&env, &token_id.address()).mint(&voucher, &1_000_000);
         client.vouch(&voucher, &borrower, &1_000_000, &token_id.address());
 
+        // Advance time past MIN_VOUCH_AGE (60s) so the vouch is eligible
+        env.ledger().with_mut(|l| l.timestamp += 61);
+
         (env, client, borrower, token_id.address())
     }
 

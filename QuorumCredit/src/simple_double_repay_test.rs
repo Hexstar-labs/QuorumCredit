@@ -9,7 +9,6 @@ mod simple_double_repay_test {
     };
 
     #[test]
-    #[should_panic(expected = "loan already repaid")]
     fn test_double_repay_panics() {
         let env = Env::default();
         env.mock_all_auths();
@@ -63,7 +62,8 @@ mod simple_double_repay_test {
         assert!(loan.is_some(), "loan should exist");
         assert_eq!(loan.unwrap().status, crate::LoanStatus::Repaid);
 
-        // Second repay - must panic with "loan already repaid"
-        client.repay(&borrower, &total_owed);
+        // Second repay - must return AlreadyRepaid error
+        let result = client.try_repay(&borrower, &total_owed);
+        assert_eq!(result, Err(Ok(crate::ContractError::AlreadyRepaid)));
     }
 }

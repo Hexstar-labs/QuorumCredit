@@ -1,9 +1,7 @@
 use crate::errors::ContractError;
-use crate::helpers::{
-    add_slash_balance, config, get_active_loan_record, get_latest_loan_record, require_not_paused,
-};
-use crate::types::{DataKey, LoanStatus, SlashVoteRecord, TimelockAction, TimelockProposal, VouchRecord};
-use soroban_sdk::{symbol_short, Address, Env, Vec};
+use crate::helpers::{add_slash_balance, config, get_active_loan_record, require_not_paused};
+use crate::types::{DataKey, SlashVoteRecord, TimelockAction, TimelockProposal, VouchRecord};
+use soroban_sdk::{panic_with_error, symbol_short, Address, Env, Vec};
 
 /// Default quorum: 50% of total vouched stake must approve.
 const DEFAULT_SLASH_VOTE_QUORUM_BPS: u32 = 5_000;
@@ -12,7 +10,7 @@ const DEFAULT_SLASH_VOTE_QUORUM_BPS: u32 = 5_000;
 ///
 /// - Only active vouchers (those with a stake in `Vouches(borrower)`) may vote.
 /// - Votes are weighted by the voucher's current stake.
-/// - When `approve_stake * 10_000 / total_stake >= quorum_bps`, slash is auto-executed.
+/// - When `approve_stake * BPS_DENOMINATOR / total_stake >= quorum_bps`, slash is auto-executed.
 pub fn vote_slash(
     env: Env,
     voucher: Address,
@@ -64,7 +62,7 @@ pub fn vote_slash(
         });
 
     if vote.executed {
-        panic!("already defaulted");
+        panic_with_error!(&env, ContractError::SlashAlreadyExecuted);
     }
 
     // Prevent double-voting.
@@ -91,8 +89,10 @@ pub fn vote_slash(
         .get(&DataKey::SlashVoteQuorum)
         .unwrap_or(DEFAULT_SLASH_VOTE_QUORUM_BPS);
 
-    let quorum_reached =
-        total_stake > 0 && vote.approve_stake * 10_000 / total_stake >= quorum_bps as i128;
+    // Use ceiling division to prevent rounding down: (approve_stake * BPS_DENOMINATOR + total_stake - 1) / total_stake
+    let quorum_reached = total_stake > 0
+        && (vote.approve_stake * BPS_DENOMINATOR + total_stake - 1) / total_stake
+            >= quorum_bps as i128;
 
     if quorum_reached {
         vote.executed = true;
@@ -119,10 +119,9 @@ pub fn get_slash_vote(env: Env, borrower: Address) -> Option<SlashVoteRecord> {
 /// Set the quorum threshold (in basis points) required to auto-execute a slash.
 /// Requires admin approval — called from admin module.
 pub fn set_slash_vote_quorum(env: &Env, quorum_bps: u32) {
-    assert!(
-        quorum_bps > 0 && quorum_bps <= 10_000,
-        "quorum_bps must be 1-10000"
-    );
+    if quorum_bps == 0 || quorum_bps > 10_000 {
+        panic_with_error!(env, ContractError::InvalidAmount);
+    }
     env.storage()
         .instance()
         .set(&DataKey::SlashVoteQuorum, &quorum_bps);
@@ -148,19 +147,21 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
 
     // Mark loan as defaulted first so we can read token_address.
     let mut loan = get_active_loan_record(env, borrower)?;
-    assert!(
-        loan.status != crate::types::LoanStatus::Defaulted,
-        "already defaulted"
-    );
+    if loan.status == crate::types::LoanStatus::Defaulted {
+        panic_with_error!(env, ContractError::SlashAlreadyExecuted);
+    }
     let loan_token = soroban_sdk::token::Client::new(env, &loan.token_address);
 
     let mut total_slashed: i128 = 0;
+    let mut remaining_vouches: Vec<VouchRecord> = Vec::new(env);
 
     for v in vouches.iter() {
         if v.token != loan.token_address {
+            // Keep non-loan-token vouches
+            remaining_vouches.push_back(v);
             continue;
         }
-        let slash_amount = v.stake * cfg.slash_bps / 10_000;
+        let slash_amount = v.stake * cfg.slash_bps / BPS_DENOMINATOR;
         let remaining = v.stake - slash_amount;
         total_slashed += slash_amount;
 
@@ -188,9 +189,16 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
         .persistent()
         .set(&DataKey::DefaultCount(borrower.clone()), &(count + 1));
 
-    env.storage()
-        .persistent()
-        .remove(&DataKey::Vouches(borrower.clone()));
+    // Only remove vouches if all were processed; otherwise keep remaining vouches
+    if remaining_vouches.is_empty() {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Vouches(borrower.clone()));
+    } else {
+        env.storage()
+            .persistent()
+            .set(&DataKey::Vouches(borrower.clone()), &remaining_vouches);
+    }
 
     env.events().publish(
         (symbol_short!("gov"), symbol_short!("slashed")),
@@ -216,6 +224,9 @@ pub fn propose_slash(
 ) -> Result<u64, ContractError> {
     proposer.require_auth();
     require_not_paused(&env)?;
+
+    // Verify borrower has an active loan
+    let _loan = get_active_loan_record(&env, &borrower)?;
 
     // Get or initialize timelock counter
     let proposal_id: u64 = env
@@ -319,7 +330,9 @@ pub fn cancel_slash_proposal(
         .ok_or(ContractError::NoActiveLoan)?;
 
     // Only proposer can cancel
-    assert!(caller == proposal.proposer, "only proposer can cancel");
+    if caller != proposal.proposer {
+        panic_with_error!(&env, ContractError::UnauthorizedCaller);
+    }
 
     if proposal.executed || proposal.cancelled {
         return Err(ContractError::SlashAlreadyExecuted);
