@@ -1,6 +1,11 @@
 use crate::errors::ContractError;
-use crate::helpers::{add_slash_balance, config, get_active_loan_record, require_not_paused};
-use crate::types::{DataKey, SlashVoteRecord, TimelockAction, TimelockProposal, VouchRecord};
+use crate::helpers::{
+    add_slash_balance, config, get_active_loan_record, get_latest_loan_record, require_not_paused,
+};
+use crate::types::{
+    DataKey, LoanStatus, SlashVoteRecord, TimelockAction, TimelockProposal, VouchRecord,
+    BPS_DENOMINATOR,
+};
 use soroban_sdk::{panic_with_error, symbol_short, Address, Env, Vec};
 
 /// Default quorum: 50% of total vouched stake must approve.

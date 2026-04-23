@@ -48,3 +48,5 @@ mod vouch_cooldown_test;
 mod vouch_zero_stake_test;
 #[path = "voucher_balance_check_test.rs"]
 mod voucher_balance_check_test;
+#[path = "input_validation_test.rs"]
+mod input_validation_test;

@@ -46,4 +46,6 @@ pub enum ContractError {
     InsufficientVoucherBalance = 36,
     /// Voucher and borrower must be different addresses.
     SelfVouchNotAllowed = 37,
+    /// admin_threshold exceeds the number of registered admins.
+    InvalidAdminThreshold = 38,
 }

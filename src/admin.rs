@@ -43,7 +43,7 @@ pub fn remove_admin(env: Env, admin_signers: Vec<Address>, admin_to_remove: Addr
         panic_with_error!(&env, ContractError::UnauthorizedCaller);
     }
     if cfg.admin_threshold > cfg.admins.len() {
-        panic_with_error!(&env, ContractError::InvalidAmount);
+        panic_with_error!(&env, ContractError::InvalidAdminThreshold);
     }
 
     env.storage().instance().set(&DataKey::Config, &cfg);
@@ -91,7 +91,7 @@ pub fn set_admin_threshold(env: Env, admin_signers: Vec<Address>, new_threshold:
         panic_with_error!(&env, ContractError::InvalidAmount);
     }
     if new_threshold > cfg.admins.len() {
-        panic_with_error!(&env, ContractError::InvalidAmount);
+        panic_with_error!(&env, ContractError::InvalidAdminThreshold);
     }
 
     cfg.admin_threshold = new_threshold;

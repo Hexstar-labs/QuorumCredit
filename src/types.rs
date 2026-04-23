@@ -23,6 +23,8 @@ use soroban_sdk::{contracttype, Address, Vec};
 pub const DEFAULT_YIELD_BPS: i128 = 200;
 /// Fraction of stake burned when a borrower defaults, in basis points (5000 = 50%).
 pub const DEFAULT_SLASH_BPS: i128 = 5000;
+/// Basis-point denominator (10_000 = 100%).
+pub const BPS_DENOMINATOR: i128 = 10_000;
 /// Minimum stake amount, in stroops (50 stroops), required for non-zero yield at
 /// the default 2% rate. Amounts below this truncate to zero yield.
 /// 1 XLM = 10,000,000 stroops.

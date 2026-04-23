@@ -1,5 +1,5 @@
 use crate::errors::ContractError;
-use crate::types::{Config, DataKey, LoanRecord};
+use crate::types::{BPS_DENOMINATOR, Config, DataKey, LoanRecord};
 use soroban_sdk::{panic_with_error, token, Address, Env, String, Vec};
 
 /// Returns true if the address is the all-zeros account or contract address.
@@ -101,7 +101,6 @@ pub fn get_latest_loan_record(env: &Env, borrower: &Address) -> Option<LoanRecor
         .get(&DataKey::LatestLoan(borrower.clone()))?;
     env.storage().persistent().get(&DataKey::Loan(loan_id))
 }
-
 pub fn token(env: &Env) -> token::Client<'_> {
     let addr = config(env).token;
     token::Client::new(env, &addr)
@@ -172,7 +171,7 @@ pub fn validate_admin_config(
         panic_with_error!(env, ContractError::InvalidAmount);
     }
     if admin_threshold > admins.len() {
-        panic_with_error!(env, ContractError::InvalidAmount);
+        panic_with_error!(env, ContractError::InvalidAdminThreshold);
     }
 
     let admin_count = admins.len();
