@@ -603,6 +603,10 @@ impl QuorumCreditContract {
         admin::set_max_loan_to_stake_ratio(env, admin_signers, ratio)
     }
 
+    pub fn set_grace_period(env: Env, admin_signers: Vec<Address>, period: u64) {
+        admin::set_grace_period(env, admin_signers, period)
+    }
+
     /// Add a token to the allowed tokens list.
     ///
     /// # Arguments

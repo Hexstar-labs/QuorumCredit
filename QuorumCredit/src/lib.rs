@@ -20,6 +20,10 @@ mod borrower_whitelist_test;
 #[cfg(test)]
 mod config_bps_test;
 #[cfg(test)]
+mod invalid_bps_test;
+#[cfg(test)]
+mod grace_period_test;
+#[cfg(test)]
 mod double_repay_test;
 #[cfg(test)]
 mod duplicate_loan_test;
