@@ -1,6 +1,7 @@
+use crate::errors::ContractError;
 use crate::helpers::{config, extend_ttl, require_admin_approval, validate_admin_config};
 use crate::types::{Config, DataKey};
-use soroban_sdk::{symbol_short, Address, BytesN, Env, Vec};
+use soroban_sdk::{panic_with_error, symbol_short, Address, BytesN, Env, Vec};
 
 pub fn add_admin(env: Env, admin_signers: Vec<Address>, new_admin: Address) {
     require_admin_approval(&env, &admin_signers);
@@ -162,7 +163,9 @@ pub fn set_config(env: Env, admin_signers: Vec<Address>, config: Config) {
     require_admin_approval(&env, &admin_signers);
     validate_admin_config(&env, &config.admins, config.admin_threshold)
         .expect("invalid admin config");
-    assert!(config.yield_bps >= 0, "yield_bps must be non-negative");
+    if config.yield_bps < 0 || config.yield_bps > 10_000 {
+        panic_with_error!(&env, ContractError::InvalidBps);
+    }
     assert!(
         config.slash_bps > 0 && config.slash_bps <= 10_000,
         "slash_bps must be 1-10000"
@@ -201,7 +204,9 @@ pub fn update_config(
     let mut cfg = config(&env);
 
     if let Some(new_yield_bps) = yield_bps {
-        assert!(new_yield_bps >= 0, "yield_bps must be non-negative");
+        if new_yield_bps < 0 || new_yield_bps > 10_000 {
+            panic_with_error!(&env, ContractError::InvalidBps);
+        }
         cfg.yield_bps = new_yield_bps;
     }
 

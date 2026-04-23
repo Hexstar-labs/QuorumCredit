@@ -183,8 +183,8 @@ pub fn set_config(env: Env, admin_signers: Vec<Address>, config: Config) {
     require_admin_approval(&env, &admin_signers);
     validate_admin_config(&env, &config.admins, config.admin_threshold)
         .expect("invalid admin config");
-    if config.yield_bps < 0 {
-        panic_with_error!(&env, ContractError::InvalidAmount);
+    if config.yield_bps < 0 || config.yield_bps > 10_000 {
+        panic_with_error!(&env, ContractError::InvalidBps);
     }
     if config.slash_bps <= 0 || config.slash_bps > 10_000 {
         panic_with_error!(&env, ContractError::InvalidAmount);
@@ -219,8 +219,8 @@ pub fn update_config(
     let mut cfg = config(&env);
 
     if let Some(new_yield_bps) = yield_bps {
-        if new_yield_bps < 0 {
-            panic_with_error!(&env, ContractError::InvalidAmount);
+        if new_yield_bps < 0 || new_yield_bps > 10_000 {
+            panic_with_error!(&env, ContractError::InvalidBps);
         }
         cfg.yield_bps = new_yield_bps;
     }
