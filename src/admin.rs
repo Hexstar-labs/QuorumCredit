@@ -43,7 +43,7 @@ pub fn remove_admin(env: Env, admin_signers: Vec<Address>, admin_to_remove: Addr
         panic_with_error!(&env, ContractError::UnauthorizedCaller);
     }
     if cfg.admin_threshold > cfg.admins.len() {
-        panic_with_error!(&env, ContractError::InvalidAmount);
+        panic_with_error!(&env, ContractError::InvalidAdminThreshold);
     }
 
     env.storage().instance().set(&DataKey::Config, &cfg);
@@ -91,7 +91,7 @@ pub fn set_admin_threshold(env: Env, admin_signers: Vec<Address>, new_threshold:
         panic_with_error!(&env, ContractError::InvalidAmount);
     }
     if new_threshold > cfg.admins.len() {
-        panic_with_error!(&env, ContractError::InvalidAmount);
+        panic_with_error!(&env, ContractError::InvalidAdminThreshold);
     }
 
     cfg.admin_threshold = new_threshold;
@@ -387,15 +387,16 @@ pub fn get_config(env: Env) -> Config {
     config(&env)
 }
 
-pub fn add_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) {
+pub fn add_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) -> Result<(), ContractError> {
     require_admin_approval(&env, &admin_signers);
-    require_valid_token(&env, &token).expect("invalid token");
+    require_valid_token(&env, &token)?;
     let mut cfg = config(&env);
     if cfg.allowed_tokens.iter().any(|t| t == token) || token == cfg.token {
-        panic_with_error!(&env, ContractError::DuplicateVouch);
+        return Err(ContractError::DuplicateToken);
     }
     cfg.allowed_tokens.push_back(token);
     env.storage().instance().set(&DataKey::Config, &cfg);
+    Ok(())
 }
 
 pub fn remove_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) {
@@ -485,4 +486,47 @@ pub fn withdraw_slash_treasury(
         (symbol_short!("admin"), symbol_short!("slshwdraw")),
         (admin_signers.get(0).unwrap(), recipient, amount),
     );
+}
+
+pub fn propose_admin(env: Env, admin_signers: Vec<Address>, new_admin: Address) -> Result<(), ContractError> {
+    require_admin_approval(&env, &admin_signers);
+
+    if new_admin == Address::zero(&env) {
+        return Err(ContractError::ZeroAddress);
+    }
+
+    env.storage()
+        .instance()
+        .set(&DataKey::PendingAdmin, &new_admin);
+
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("proposed")),
+        new_admin,
+    );
+
+    Ok(())
+}
+
+pub fn accept_admin(env: Env) -> Result<(), ContractError> {
+    let new_admin = env
+        .storage()
+        .instance()
+        .get(&DataKey::PendingAdmin)
+        .ok_or(ContractError::UnauthorizedCaller)?;
+
+    new_admin.require_auth();
+
+    let mut cfg = config(&env);
+    cfg.admins.push_back(new_admin.clone());
+    env.storage().instance().set(&DataKey::Config, &cfg);
+
+    // Clear the pending admin
+    env.storage().instance().remove(&DataKey::PendingAdmin);
+
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("accepted")),
+        new_admin,
+    );
+
+    Ok(())
 }

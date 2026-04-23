@@ -117,6 +117,84 @@ pub fn whitelist_voucher(env: Env, admin_signers: Vec<Address>, voucher: Address
     extend_ttl(&env, &DataKey::VoucherWhitelist(voucher));
 }
 
+pub fn add_voucher_to_whitelist(env: Env, admin_signers: Vec<Address>, voucher: Address) {
+    require_admin_approval(&env, &admin_signers);
+    env.storage()
+        .persistent()
+        .set(&DataKey::VoucherWhitelist(voucher.clone()), &true);
+    extend_ttl(&env, &DataKey::VoucherWhitelist(voucher));
+}
+
+pub fn remove_voucher_from_whitelist(env: Env, admin_signers: Vec<Address>, voucher: Address) {
+    require_admin_approval(&env, &admin_signers);
+    env.storage()
+        .persistent()
+        .remove(&DataKey::VoucherWhitelist(voucher));
+}
+
+pub fn enable_voucher_whitelist(env: Env, admin_signers: Vec<Address>) {
+    require_admin_approval(&env, &admin_signers);
+    env.storage()
+        .instance()
+        .set(&DataKey::VoucherWhitelistEnabled, &true);
+}
+
+pub fn disable_voucher_whitelist(env: Env, admin_signers: Vec<Address>) {
+    require_admin_approval(&env, &admin_signers);
+    env.storage()
+        .instance()
+        .set(&DataKey::VoucherWhitelistEnabled, &false);
+}
+
+pub fn is_voucher_whitelist_enabled(env: Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::VoucherWhitelistEnabled)
+        .unwrap_or(false)
+}
+
+pub fn add_borrower_to_whitelist(env: Env, admin_signers: Vec<Address>, borrower: Address) {
+    require_admin_approval(&env, &admin_signers);
+    env.storage()
+        .persistent()
+        .set(&DataKey::BorrowerWhitelist(borrower.clone()), &true);
+    extend_ttl(&env, &DataKey::BorrowerWhitelist(borrower));
+}
+
+pub fn remove_borrower_from_whitelist(env: Env, admin_signers: Vec<Address>, borrower: Address) {
+    require_admin_approval(&env, &admin_signers);
+    env.storage()
+        .persistent()
+        .remove(&DataKey::BorrowerWhitelist(borrower));
+}
+
+pub fn enable_borrower_whitelist(env: Env, admin_signers: Vec<Address>) {
+    require_admin_approval(&env, &admin_signers);
+    env.storage()
+        .instance()
+        .set(&DataKey::BorrowerWhitelistEnabled, &true);
+}
+
+pub fn disable_borrower_whitelist(env: Env, admin_signers: Vec<Address>) {
+    require_admin_approval(&env, &admin_signers);
+    env.storage()
+        .instance()
+        .set(&DataKey::BorrowerWhitelistEnabled, &false);
+}
+
+pub fn is_borrower_whitelisted(env: Env, borrower: Address) -> bool {
+    env.storage()
+        .persistent()
+        .get(&DataKey::BorrowerWhitelist(borrower))
+        .unwrap_or(false)
+}
+
+pub fn is_borrower_whitelist_enabled(env: Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::BorrowerWhitelistEnabled)
+        .unwrap_or(false)
+}
 pub fn set_fee_treasury(env: Env, admin_signers: Vec<Address>, treasury: Address) {
     require_admin_approval(&env, &admin_signers);
     env.storage()
@@ -257,7 +335,20 @@ pub fn set_min_stake(env: Env, admin_signers: Vec<Address>, amount: i128) {
     );
 }
 
-pub fn set_max_loan_amount(env: Env, admin_signers: Vec<Address>, amount: i128) {
+pub fn set_min_loan_amount(
+    env: Env,
+    admin_signers: Vec<Address>,
+    amount: i128,
+) -> Result<(), ContractError> {
+    require_admin_approval(&env, &admin_signers);
+    if amount <= 0 {
+        return Err(ContractError::InvalidAmount);
+    }
+    let mut cfg = config(&env);
+    cfg.min_loan_amount = amount;
+    env.storage().instance().set(&DataKey::Config, &cfg);
+    Ok(())
+}pub fn set_max_loan_amount(env: Env, admin_signers: Vec<Address>, amount: i128) {
     require_admin_approval(&env, &admin_signers);
     assert!(amount >= 0, "max loan amount cannot be negative");
     env.storage()
@@ -356,16 +447,16 @@ pub fn get_config(env: Env) -> Config {
     config(&env)
 }
 
-pub fn add_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) {
+pub fn add_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) -> Result<(), ContractError> {
     require_admin_approval(&env, &admin_signers);
     require_valid_token(&env, &token).unwrap_or_else(|e| panic_with_error!(&env, e));
     let mut cfg = config(&env);
-    assert!(
-        !cfg.allowed_tokens.iter().any(|t| t == token) && token != cfg.token,
-        "token already allowed"
-    );
+    if cfg.allowed_tokens.iter().any(|t| t == token) || token == cfg.token {
+        return Err(ContractError::DuplicateToken);
+    }
     cfg.allowed_tokens.push_back(token);
     env.storage().instance().set(&DataKey::Config, &cfg);
+    Ok(())
 }
 
 pub fn remove_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) {
@@ -393,4 +484,47 @@ pub fn is_whitelisted(env: Env, voucher: Address) -> bool {
         .persistent()
         .get(&DataKey::VoucherWhitelist(voucher))
         .unwrap_or(false)
+}
+
+pub fn propose_admin(env: Env, admin_signers: Vec<Address>, new_admin: Address) -> Result<(), ContractError> {
+    require_admin_approval(&env, &admin_signers);
+
+    if new_admin == Address::zero(&env) {
+        return Err(ContractError::ZeroAddress);
+    }
+
+    env.storage()
+        .instance()
+        .set(&DataKey::PendingAdmin, &new_admin);
+
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("proposed")),
+        new_admin,
+    );
+
+    Ok(())
+}
+
+pub fn accept_admin(env: Env) -> Result<(), ContractError> {
+    let new_admin = env
+        .storage()
+        .instance()
+        .get(&DataKey::PendingAdmin)
+        .ok_or(ContractError::UnauthorizedCaller)?;
+
+    new_admin.require_auth();
+
+    let mut cfg = config(&env);
+    cfg.admins.push_back(new_admin.clone());
+    env.storage().instance().set(&DataKey::Config, &cfg);
+
+    // Clear the pending admin
+    env.storage().instance().remove(&DataKey::PendingAdmin);
+
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("accepted")),
+        new_admin,
+    );
+
+    Ok(())
 }

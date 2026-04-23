@@ -243,4 +243,44 @@ mod governance_tests {
             crate::LoanStatus::Defaulted
         );
     }
+
+    /// Test that execute_slash_vote rejects execution when quorum is not met.
+    #[test]
+    fn test_execute_slash_vote_without_quorum_rejected() {
+        let s = setup();
+        let borrower = Address::generate(&s.env);
+        let voucher_a = Address::generate(&s.env);
+        let voucher_b = Address::generate(&s.env);
+
+        // Set quorum to 60% (6000 bps)
+        let admins = Vec::from_array(&s.env, [s.admin.clone()]);
+        s.client.set_slash_vote_quorum(&admins, &6_000);
+
+        // Create stakes: voucher_a = 3000, voucher_b = 3000 → total = 6000
+        do_vouch(&s, &voucher_a, &borrower, 3_000_000);
+        do_vouch(&s, &voucher_b, &borrower, 3_000_000);
+        do_loan(&s, &borrower, 100_000, 10_000_000);
+
+        // Vote approve with only voucher_a (50% < 60% quorum)
+        s.client.vote_slash(&voucher_a, &borrower, &true);
+
+        // Attempt to execute should fail with QuorumNotMet
+        let result = s.client.try_execute_slash_vote(&borrower);
+        assert_eq!(result, Err(Ok(ContractError::QuorumNotMet)));
+
+        // Loan should still be active
+        assert_eq!(s.client.loan_status(&borrower), crate::LoanStatus::Active);
+    }
+
+    /// Test that propose_admin rejects zero address.
+    #[test]
+    fn test_propose_admin_zero_address_rejected() {
+        let s = setup();
+        let zero_addr = Address::zero(&s.env);
+        let admins = Vec::from_array(&s.env, [s.admin.clone()]);
+
+        // Attempt to propose zero address should fail
+        let result = s.client.try_propose_admin(&admins, &zero_addr);
+        assert_eq!(result, Err(Ok(ContractError::ZeroAddress)));
+    }
 }

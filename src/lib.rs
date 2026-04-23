@@ -12,33 +12,9 @@ mod tests;
 pub mod types;
 pub mod vouch;
 
-// #[cfg(test)]
-mod governance_test;
-// #[cfg(test)]
-mod initialize_test;
-// #[cfg(test)]
-mod loan_purpose_test;
-// #[cfg(test)]
-mod multi_asset_test;
-// #[cfg(test)]
-mod referral_test;
-// #[cfg(test)]
-#[cfg(test)]
-mod min_loan_amount_test;
-mod request_loan_insufficient_stake_test;
-mod security_fixes_test;
-#[cfg(test)]
-mod vouch_zero_stake_test;
-// #[cfg(test)]
-mod bug_condition_test;
-#[cfg(test)]
-mod double_slash_panic_test;
-#[cfg(test)]
-mod slash_after_repay_test;
-#[cfg(test)]
-mod duplicate_loan_test;
-#[cfg(test)]
-mod full_lifecycle_test;
+pub use contract::QuorumCreditContract;
+pub use errors::ContractError;
+pub use types::*;
 
 #[cfg(test)]
 mod get_loan_none_test;
@@ -412,6 +388,32 @@ impl QuorumCreditContract {
         admin::rotate_admin(env, admin_signers, old_admin, new_admin)
     }
 
+    /// Propose a new admin (two-step admin transfer).
+    ///
+    /// # Arguments
+    /// * `admin_signers` - Vector of admin addresses (must meet current threshold)
+    /// * `new_admin` - Address of the proposed new admin
+    ///
+    /// # Returns
+    /// * `Result<(), ContractError>` - Success or error
+    ///
+    /// # Errors
+    /// * `ContractError::ZeroAddress` - If new_admin is the zero address
+    pub fn propose_admin(env: Env, admin_signers: Vec<Address>, new_admin: Address) -> Result<(), ContractError> {
+        admin::propose_admin(env, admin_signers, new_admin)
+    }
+
+    /// Accept the proposed admin transfer.
+    ///
+    /// # Returns
+    /// * `Result<(), ContractError>` - Success or error
+    ///
+    /// # Errors
+    /// * `ContractError::UnauthorizedCaller` - If no pending admin is set or caller is not the pending admin
+    pub fn accept_admin(env: Env) -> Result<(), ContractError> {
+        admin::accept_admin(env)
+    }
+
     /// Set the admin threshold (minimum number of admins required for approval).
     ///
     /// # Arguments
@@ -617,7 +619,7 @@ impl QuorumCreditContract {
         admin::set_max_vouchers_per_borrower(env, admin_signers, max_vouchers)
     }
 
-    pub fn add_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) {
+    pub fn add_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) -> Result<(), ContractError> {
         admin::add_allowed_token(env, admin_signers, token)
     }
 
@@ -1032,5 +1034,21 @@ impl QuorumCreditContract {
     /// * `Option<SlashVoteRecord>` - The slash vote record if exists, None otherwise
     pub fn get_slash_vote(env: Env, borrower: Address) -> Option<SlashVoteRecord> {
         governance::get_slash_vote(env, borrower)
+    }
+
+    /// Execute a slash vote if quorum has been met.
+    ///
+    /// # Arguments
+    /// * `borrower` - Address of the borrower whose slash vote to execute
+    ///
+    /// # Returns
+    /// * `Result<(), ContractError>` - Success or error
+    ///
+    /// # Errors
+    /// * `ContractError::SlashVoteNotFound` - If no slash vote exists for the borrower
+    /// * `ContractError::SlashAlreadyExecuted` - If the slash has already been executed
+    /// * `ContractError::QuorumNotMet` - If the approval stake does not meet the quorum threshold
+    pub fn execute_slash_vote(env: Env, borrower: Address) -> Result<(), ContractError> {
+        governance::execute_slash_vote(env, borrower)
     }
 }

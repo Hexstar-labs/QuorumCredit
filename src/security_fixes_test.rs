@@ -312,14 +312,29 @@ mod security_fixes_tests {
         let token = StellarAssetClient::new(&s.env, &s.token_id);
         token.mint(&user, &stake);
 
-        // Attempt to vouch for self should panic
+        // Attempt to vouch for self should return SelfVouchNotAllowed
         let result = s.client.try_vouch(&user, &user, &stake, &s.token_id);
+        assert_eq!(result, Err(Ok(ContractError::SelfVouchNotAllowed)));
+    /// Test that a borrower cannot vouch for themselves in batch_vouch.
+    #[test]
+    fn test_batch_vouch_self_vouch_not_allowed() {
+        let s = setup();
 
-        // The assertion should cause a panic, which results in an error
-        assert!(
-            result.is_err(),
-            "Self-vouch should panic and return an error"
-        );
+        let user = Address::generate(&s.env);
+        let other_borrower = Address::generate(&s.env);
+        let stake = 500_000;
+
+        // Mint tokens to the user
+        let token = StellarAssetClient::new(&s.env, &s.token_id);
+        token.mint(&user, &stake * 2);
+
+        // Create batch with self-vouch attempt
+        let borrowers = Vec::from_array(&s.env, [user.clone(), other_borrower]);
+        let stakes = Vec::from_array(&s.env, [stake, stake]);
+
+        // Attempt to batch vouch including self should return SelfVouchNotAllowed
+        let result = s.client.try_batch_vouch(&user, &borrowers, &stakes, &s.token_id);
+        assert_eq!(result, Err(Ok(ContractError::SelfVouchNotAllowed)));
     }
 
     // ── Issue 114: Add Invariant Tests ──

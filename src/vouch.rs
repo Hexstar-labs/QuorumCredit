@@ -28,7 +28,7 @@ fn do_vouch(
     require_positive_amount(env, stake)?;
 
     if voucher == borrower {
-        panic_with_error!(env, ContractError::UnauthorizedCaller);
+        return Err(ContractError::SelfVouchNotAllowed);
     }
 
     // Check if borrower is blacklisted
@@ -179,6 +179,13 @@ pub fn batch_vouch(
     }
     if borrowers.is_empty() {
         panic_with_error!(&env, ContractError::InsufficientFunds);
+    }
+
+    // Validate that no borrower equals the voucher (self-vouch not allowed)
+    for borrower in borrowers.iter() {
+        if borrower == voucher {
+            return Err(ContractError::SelfVouchNotAllowed);
+        }
     }
 
     for i in 0..borrowers.len() {

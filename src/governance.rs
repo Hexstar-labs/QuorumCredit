@@ -1,6 +1,11 @@
 use crate::errors::ContractError;
-use crate::helpers::{add_slash_balance, config, get_active_loan_record, require_not_paused};
-use crate::types::{DataKey, SlashVoteRecord, TimelockAction, TimelockProposal, VouchRecord};
+use crate::helpers::{
+    add_slash_balance, config, get_active_loan_record, get_latest_loan_record, require_not_paused,
+};
+use crate::types::{
+    DataKey, LoanStatus, SlashVoteRecord, TimelockAction, TimelockProposal, VouchRecord,
+    BPS_DENOMINATOR,
+};
 use soroban_sdk::{panic_with_error, symbol_short, Address, Env, Vec};
 
 /// Default quorum: 50% of total vouched stake must approve.
@@ -132,6 +137,52 @@ pub fn get_slash_vote_quorum(env: Env) -> u32 {
         .instance()
         .get(&DataKey::SlashVoteQuorum)
         .unwrap_or(DEFAULT_SLASH_VOTE_QUORUM_BPS)
+}
+
+/// Execute a slash vote if quorum has been met.
+/// Anyone can call this function to execute a slash once quorum is reached.
+pub fn execute_slash_vote(env: Env, borrower: Address) -> Result<(), ContractError> {
+    require_not_paused(&env)?;
+
+    let vote = env
+        .storage()
+        .persistent()
+        .get(&DataKey::SlashVote(borrower.clone()))
+        .ok_or(ContractError::SlashVoteNotFound)?;
+
+    if vote.executed {
+        return Err(ContractError::SlashAlreadyExecuted);
+    }
+
+    // Get total stake for the borrower
+    let vouches: Vec<VouchRecord> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Vouches(borrower.clone()))
+        .unwrap_or(Vec::new(&env));
+    let total_stake: i128 = vouches.iter().map(|v| v.stake).sum();
+
+    // Retrieve quorum threshold
+    let quorum_bps: u32 = get_slash_vote_quorum(env);
+
+    // Calculate required quorum stake
+    let quorum_stake = total_stake * quorum_bps as i128 / 10_000;
+
+    // Check if approval stake meets quorum
+    if vote.approve_stake < quorum_stake {
+        return Err(ContractError::QuorumNotMet);
+    }
+
+    // Mark as executed and execute the slash
+    let mut updated_vote = vote;
+    updated_vote.executed = true;
+    env.storage()
+        .persistent()
+        .set(&DataKey::SlashVote(borrower.clone()), &updated_vote);
+
+    execute_slash(&env, &borrower)?;
+
+    Ok(())
 }
 
 // ── Internal ──────────────────────────────────────────────────────────────────
