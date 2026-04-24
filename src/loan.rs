@@ -10,6 +10,33 @@ use crate::types::{
 };
 use soroban_sdk::{panic_with_error, symbol_short, Address, Env, Vec};
 
+/// Calculate dynamic yield in basis points for a borrower.
+///
+/// Formula: `base_yield_bps + (credit_score / 100) - (default_count * 50)`
+/// Result is floored at 0.
+///
+/// * `credit_score` — reputation NFT balance (0 if no NFT contract configured)
+/// * `default_count` — number of past defaults for the borrower
+pub fn calculate_dynamic_yield(env: &Env, borrower: &Address) -> i128 {
+    let base_bps = config(env).yield_bps;
+
+    let credit_score: i128 = env
+        .storage()
+        .instance()
+        .get::<DataKey, Address>(&DataKey::ReputationNft)
+        .map(|nft_addr| ReputationNftExternalClient::new(env, &nft_addr).balance(borrower) as i128)
+        .unwrap_or(0);
+
+    let default_count: i128 = env
+        .storage()
+        .persistent()
+        .get::<DataKey, u32>(&DataKey::DefaultCount(borrower.clone()))
+        .unwrap_or(0) as i128;
+
+    let dynamic_bps = base_bps + (credit_score / 100) - (default_count * 50);
+    dynamic_bps.max(0)
+}
+
 /// Register a referrer for a borrower. Must be called before `request_loan`.
 /// The referrer cannot be the borrower themselves.
 pub fn register_referral(
@@ -153,7 +180,8 @@ pub fn request_loan(
 
     let deadline = now + cfg.loan_duration;
     let loan_id = next_loan_id(&env);
-    let total_yield = amount * cfg.yield_bps / 10_000; // stroops
+    let dynamic_yield_bps = calculate_dynamic_yield(&env, &borrower);
+    let total_yield = amount * dynamic_yield_bps / 10_000; // stroops
 
     env.storage().persistent().set(
         &DataKey::Loan(loan_id),

@@ -48,6 +48,8 @@ mod repayment_reminder_test;
 mod mint_reputation_nft_test;
 #[cfg(test)]
 mod insurance_test;
+#[cfg(test)]
+mod dynamic_yield_test;
 
 // ── Storage Keys ──────────────────────────────────────────────────────────────
 

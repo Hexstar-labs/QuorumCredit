@@ -1025,6 +1025,13 @@ impl QuorumCreditContract {
         loan::mint_reputation_nft(env, borrower)
     }
 
+    /// Calculate the dynamic yield in basis points for a borrower.
+    ///
+    /// Formula: `base_yield_bps + (credit_score / 100) - (default_count * 50)`, floored at 0.
+    pub fn calculate_dynamic_yield(env: Env, borrower: Address) -> i128 {
+        loan::calculate_dynamic_yield(&env, &borrower)
+    }
+
     // ── Insurance Pool ────────────────────────────────────────────────────────
 
     /// Contribute tokens to the insurance pool.
