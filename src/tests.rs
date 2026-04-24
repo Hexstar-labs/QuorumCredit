@@ -4,6 +4,8 @@ mod bug_condition_test;
 mod double_slash_panic_test;
 #[path = "duplicate_loan_test.rs"]
 mod duplicate_loan_test;
+#[path = "duplicate_vouch_test.rs"]
+mod duplicate_vouch_test;
 #[path = "full_lifecycle_test.rs"]
 mod full_lifecycle_test;
 #[path = "get_loan_none_test.rs"]

@@ -28,6 +28,8 @@ mod double_repay_test;
 #[cfg(test)]
 mod duplicate_loan_test;
 #[cfg(test)]
+mod duplicate_vouch_test;
+#[cfg(test)]
 mod get_loan_status_test;
 #[cfg(test)]
 mod governance_test;
