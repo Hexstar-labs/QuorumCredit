@@ -48,4 +48,6 @@ pub enum ContractError {
     /// Voucher and borrower must be different addresses.
     SelfVouchNotAllowed = 37,
     DuplicateToken = 38,
+    InsuranceClaimAlreadyMade = 39,
+    InsurancePoolEmpty = 40,
 }

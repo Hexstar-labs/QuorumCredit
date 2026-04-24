@@ -5,6 +5,7 @@ mod contract;
 pub mod errors;
 pub mod governance;
 pub mod helpers;
+pub mod insurance;
 pub mod loan;
 pub mod reputation;
 #[cfg(test)]
@@ -45,6 +46,8 @@ mod vote_slash_auto_execute_test;
 mod repayment_reminder_test;
 #[cfg(test)]
 mod mint_reputation_nft_test;
+#[cfg(test)]
+mod insurance_test;
 
 // ── Storage Keys ──────────────────────────────────────────────────────────────
 

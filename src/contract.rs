@@ -3,6 +3,7 @@ use crate::{
     errors::ContractError,
     governance,
     helpers::{self, require_valid_token, validate_admin_config},
+    insurance,
     loan,
     reputation::ReputationNftExternalClient,
     types::*,
@@ -1022,5 +1023,30 @@ impl QuorumCreditContract {
     /// * `NoActiveLoan` — borrower has no successful repayments or no NFT contract configured
     pub fn mint_reputation_nft(env: Env, borrower: Address) -> Result<(), ContractError> {
         loan::mint_reputation_nft(env, borrower)
+    }
+
+    // ── Insurance Pool ────────────────────────────────────────────────────────
+
+    /// Contribute tokens to the insurance pool.
+    pub fn contribute_to_insurance(
+        env: Env,
+        contributor: Address,
+        amount: i128,
+    ) -> Result<(), ContractError> {
+        insurance::contribute_to_insurance(env, contributor, amount)
+    }
+
+    /// Claim an insurance payout for a defaulted loan.
+    pub fn claim_insurance(
+        env: Env,
+        voucher: Address,
+        loan_id: u64,
+    ) -> Result<(), ContractError> {
+        insurance::claim_insurance(env, voucher, loan_id)
+    }
+
+    /// Get the current insurance pool balance in stroops.
+    pub fn get_insurance_pool_balance(env: Env) -> i128 {
+        insurance::get_insurance_pool_balance(env)
     }
 }
