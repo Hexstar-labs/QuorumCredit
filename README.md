@@ -495,6 +495,33 @@ All contract errors are defined in `src/errors.rs` as the `ContractError` enum. 
 
 ---
 
+## Frequently Asked Questions (FAQ)
+
+### What happens if I default?
+If a borrower defaults (fails to repay the loan by the due date), the vouchers who backed the loan will have their staked XLM slashed proportionally to cover the loss. The slashing mechanism is automated through the smart contract and follows these steps:
+1. The default is detected after the repayment deadline passes
+2. Each voucher's stake is reduced proportionally based on their contribution to the loan
+3. The slashed funds are used to cover the outstanding loan amount
+4. Defaulting affects the borrower's credit score within the system, making it harder to get future loans
+
+### Can I withdraw my vouch?
+Yes, but with important limitations to protect the system:
+1. **Before loan disbursement**: You can withdraw your vouch at any time before the loan is funded
+2. **After loan disbursement**: Once the loan is active, you cannot withdraw your vouch until the loan is fully repaid or defaulted
+3. **Partial withdrawal**: You can reduce your stake (but not below the minimum required) if the loan hasn't been disbursed yet
+4. **Withdrawal process**: Use the `decrease_stake()` function to reduce your vouch amount
+
+### How is yield funded?
+Yield for vouchers comes from two primary sources:
+1. **Interest payments**: Borrowers pay interest on their loans, which is distributed to vouchers proportionally to their stake
+2. **Protocol fees**: A small percentage of each successful loan goes into a yield pool
+3. **Distribution**: Yield is locked in at loan disbursement and distributed upon successful repayment
+4. **Calculation**: Yield amount = (loan amount × interest rate × voucher's stake percentage)
+
+The yield mechanism ensures that vouchers are compensated for the risk they take while maintaining the protocol's sustainability.
+
+---
+
 ## Contributing
 
 Contributions are what make the open-source community such an amazing place to learn, inspire, and create. Any contributions you make are **greatly appreciated**.

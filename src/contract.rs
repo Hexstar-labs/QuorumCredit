@@ -597,6 +597,42 @@ impl QuorumCreditContract {
         admin::remove_allowed_token(env, admin_signers, token)
     }
 
+    // ── Queries ───────────────────────────────────────────────────────────────
+
+    /// Get the current list of admin addresses.
+    ///
+    /// # Returns
+    /// * `Vec<Address>` - The list of admin addresses
+    pub fn get_admins(env: Env) -> Vec<Address> {
+        helpers::get_admins(&env)
+    }
+
+    /// Get the current protocol configuration.
+    ///
+    /// # Returns
+    /// * `Config` - The current configuration struct
+    pub fn get_config(env: Env) -> Config {
+        helpers::config(&env)
+    }
+
+    /// Get the accumulated protocol fees in the fee treasury.
+    ///
+    /// # Returns
+    /// * `i128` - The balance of the fee treasury address in stroops
+    pub fn get_fee_treasury(env: Env) -> i128 {
+        let fee_treasury: Option<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::FeeTreasury);
+        match fee_treasury {
+            Some(address) => {
+                let token_client = helpers::token(&env);
+                token_client.balance(&address)
+            }
+            None => 0,
+        }
+    }
+
     // ── Governance ────────────────────────────────────────────────────────────
 
     /// Vote on a slash proposal for a borrower.
