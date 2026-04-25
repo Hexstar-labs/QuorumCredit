@@ -421,6 +421,13 @@ pub fn is_eligible(env: Env, borrower: Address, threshold: i128) -> bool {
     total_stake >= threshold
 }
 
+pub fn get_loan_purpose(env: Env, loan_id: u64) -> Option<soroban_sdk::String> {
+    env.storage()
+        .persistent()
+        .get::<DataKey, LoanRecord>(&DataKey::Loan(loan_id))
+        .map(|l| l.loan_purpose)
+}
+
 pub fn repayment_count(env: Env, borrower: Address) -> u32 {
     env.storage()
         .persistent()

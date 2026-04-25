@@ -38,6 +38,8 @@ mod initialize_test;
 #[cfg(test)]
 mod loan_purpose_test;
 #[cfg(test)]
+mod loan_purpose_query_test;
+#[cfg(test)]
 mod multi_asset_test;
 #[cfg(test)]
 mod referral_test;
@@ -492,6 +494,10 @@ impl QuorumCreditContract {
 
     pub fn get_loan_by_id(env: Env, loan_id: u64) -> Option<LoanRecord> {
         loan::get_loan_by_id(env, loan_id)
+    }
+
+    pub fn get_loan_purpose(env: Env, loan_id: u64) -> Option<soroban_sdk::String> {
+        loan::get_loan_purpose(env, loan_id)
     }
 
     pub fn get_loan_status(env: Env, loan_id: u64) -> LoanStatus {
