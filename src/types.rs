@@ -67,6 +67,8 @@ pub enum DataKey {
     ReferredBy(Address), // borrower → Address of referrer
     ReferralBonusBps, // u32 referral bonus in basis points (default 100 = 1%)
     MaxVouchersPerBorrower, // u32 maximum number of vouchers per borrower (default 50)
+    BorrowerCollateral(Address), // borrower → i128 collateral amount deposited
+    BorrowerCollateralToken(Address), // borrower → Address token used for collateral
 }
 
 // ── Governance ────────────────────────────────────────────────────────────────
@@ -96,6 +98,9 @@ pub struct Config {
     pub loan_duration: u64,
     pub max_loan_to_stake_ratio: u32,
     pub grace_period: u64,
+    pub prepayment_penalty_bps: u32,    // Issue #542: penalty for early repayment
+    pub collateral_required: bool,      // Issue #541: require collateral for high-risk borrowers
+    pub default_threshold_for_collateral: u32, // Issue #541: default count threshold
 }
 
 // ── Data Types ────────────────────────────────────────────────────────────────
@@ -116,6 +121,9 @@ pub struct LoanRecord {
     pub deadline: u64,                     // repayment deadline (ledger timestamp)
     pub loan_purpose: soroban_sdk::String, // borrower-supplied purpose string
     pub token_address: Address,            // token used for this loan
+    pub collateral_amount: i128,           // Issue #541: collateral deposited by borrower
+    pub is_refinance: bool,                // Issue #539: true if this is a refinanced loan
+    pub original_loan_id: Option<u64>,     // Issue #539: ID of the loan being refinanced
 }
 
 #[contracttype]
