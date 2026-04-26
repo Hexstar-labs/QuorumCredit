@@ -526,6 +526,125 @@ pub fn voucher_history(env: Env, voucher: Address) -> Vec<Address> {
         .get(&DataKey::VoucherHistory(voucher))
         .unwrap_or(Vec::new(&env))
 }
+
+/// Request vouch withdrawal with timelock.
+pub fn request_vouch_withdrawal(
+    env: Env,
+    voucher: Address,
+    borrower: Address,
+    token: Address,
+) -> Result<(), ContractError> {
+    voucher.require_auth();
+    require_not_paused(&env)?;
+
+    let vouches: Vec<VouchRecord> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Vouches(borrower.clone()))
+        .unwrap_or(Vec::new(&env));
+
+    let mut found = false;
+    for v in vouches.iter() {
+        if v.voucher == voucher && v.token == token {
+            found = true;
+            break;
+        }
+    }
+
+    if !found {
+        return Err(ContractError::VoucherNotFound);
+    }
+
+    if has_active_loan(&env, &borrower) {
+        return Err(ContractError::ActiveLoanExists);
+    }
+
+    let now = env.ledger().timestamp();
+    env.storage().persistent().set(
+        &DataKey::WithdrawalRequests(voucher.clone(), borrower.clone(), token.clone()),
+        &crate::types::WithdrawalRequest {
+            voucher: voucher.clone(),
+            borrower: borrower.clone(),
+            token: token.clone(),
+            requested_at: now,
+        },
+    );
+
+    env.events().publish(
+        (symbol_short!("vouch"), symbol_short!("withdrawal_requested")),
+        (voucher, borrower, token),
+    );
+
+    Ok(())
+}
+
+/// Execute vouch withdrawal after timelock expires.
+pub fn execute_vouch_withdrawal(
+    env: Env,
+    voucher: Address,
+    borrower: Address,
+    token: Address,
+) -> Result<(), ContractError> {
+    voucher.require_auth();
+    require_not_paused(&env)?;
+
+    let withdrawal_req: crate::types::WithdrawalRequest = env
+        .storage()
+        .persistent()
+        .get(&DataKey::WithdrawalRequests(voucher.clone(), borrower.clone(), token.clone()))
+        .ok_or(ContractError::TimelockNotFound)?;
+
+    let now = env.ledger().timestamp();
+    if now < withdrawal_req.requested_at + crate::types::WITHDRAWAL_TIMELOCK_DELAY {
+        return Err(ContractError::TimelockNotReady);
+    }
+
+    env.storage()
+        .persistent()
+        .remove(&DataKey::WithdrawalRequests(voucher.clone(), borrower.clone(), token.clone()));
+
+    let mut vouches: Vec<VouchRecord> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Vouches(borrower.clone()))
+        .unwrap_or(Vec::new(&env));
+
+    let mut stake_to_return: i128 = 0;
+    let mut new_vouches = Vec::new(&env);
+
+    for v in vouches.iter() {
+        if v.voucher == voucher && v.token == token {
+            stake_to_return = v.stake;
+        } else {
+            new_vouches.push_back(v);
+        }
+    }
+
+    if stake_to_return == 0 {
+        return Err(ContractError::VoucherNotFound);
+    }
+
+    if new_vouches.is_empty() {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Vouches(borrower.clone()));
+    } else {
+        env.storage()
+            .persistent()
+            .set(&DataKey::Vouches(borrower.clone()), &new_vouches);
+    }
+
+    let token_client = require_allowed_token(&env, &token)?;
+    token_client.transfer(&env.current_contract_address(), &voucher, &stake_to_return);
+
+    env.events().publish(
+        (symbol_short!("vouch"), symbol_short!("withdrawn")),
+        (voucher, borrower, stake_to_return),
+    );
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
