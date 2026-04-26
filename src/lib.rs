@@ -1,43 +1,21 @@
 #![no_std]
 
-use soroban_sdk::{
-    contract, contractimpl, panic_with_error, symbol_short, Address, BytesN, Env, Vec,
-};
-
 pub mod admin;
+mod contract;
 pub mod errors;
 pub mod governance;
 pub mod helpers;
+pub mod insurance;
 pub mod loan;
 pub mod reputation;
+#[cfg(test)]
+mod tests;
 pub mod types;
 pub mod vouch;
 
-// #[cfg(test)]
-mod governance_test;
-// #[cfg(test)]
-mod initialize_test;
-// #[cfg(test)]
-mod loan_purpose_test;
-// #[cfg(test)]
-mod multi_asset_test;
-// #[cfg(test)]
-mod referral_test;
-// #[cfg(test)]
-#[cfg(test)]
-mod min_loan_amount_test;
-mod request_loan_insufficient_stake_test;
-mod security_fixes_test;
-#[cfg(test)]
-mod vouch_zero_stake_test;
-// #[cfg(test)]
-mod bug_condition_test;
-#[cfg(test)]
-mod double_slash_panic_test;
-#[cfg(test)]
-mod duplicate_loan_test;
-#[cfg(test)]
-mod full_lifecycle_test;
+pub use contract::QuorumCreditContract;
+pub use errors::ContractError;
+pub use types::*;
 
 #[cfg(test)]
 mod get_loan_none_test;
@@ -51,6 +29,8 @@ mod max_vouchers_per_borrower_test;
 mod paused_state_test;
 #[cfg(test)]
 mod repay_nonexistent_loan_test;
+#[cfg(test)]
+mod partial_repay_test;
 mod slash_multi_voucher_test;
 #[cfg(test)]
 mod voucher_balance_check_test;
@@ -62,9 +42,39 @@ mod co_borrower_test;
 mod collateral_test;
 #[cfg(test)]
 mod prepayment_penalty_test;
+#[cfg(test)]
+mod vouch_cooldown_test;
+#[cfg(test)]
+mod vouch_active_loan_test;
+#[cfg(test)]
+mod request_loan_stake_threshold_test;
+#[cfg(test)]
+mod increase_stake_overflow_test;
+#[cfg(test)]
+mod batch_vouch_partial_failure_test;
+#[cfg(test)]
+mod decrease_stake_full_withdrawal_test;
+#[cfg(test)]
+mod initialize_admin_threshold_test;
+#[cfg(test)]
+mod repay_protocol_fee_test;
+#[cfg(test)]
+mod is_eligible_token_filter_test;
+#[cfg(test)]
+mod vote_slash_auto_execute_test;
+#[cfg(test)]
+mod repayment_reminder_test;
+#[cfg(test)]
+mod mint_reputation_nft_test;
+#[cfg(test)]
+mod insurance_test;
+#[cfg(test)]
+mod dynamic_yield_test;
+#[cfg(test)]
+mod multi_token_vouch_test;
+>>>>>>> origin/main
 
-pub use errors::ContractError;
-pub use types::*;
+// ── Storage Keys ──────────────────────────────────────────────────────────────
 
 use helpers::{require_valid_token, validate_admin_config};
 use reputation::ReputationNftExternalClient;
@@ -87,16 +97,6 @@ impl QuorumCreditContract {
         if env.storage().instance().has(&DataKey::Config) {
             panic_with_error!(&env, ContractError::AlreadyInitialized);
         }
-
-        validate_admin_config(&env, &admins, admin_threshold).expect("invalid admin config");
-        require_valid_token(&env, &token).expect("invalid token");
-        assert!(
-            !env.storage().instance().has(&DataKey::Config),
-            "already initialized"
-        );
-
-        validate_admin_config(&env, &admins, admin_threshold)?;
-        require_valid_token(&env, &token)?;
 
         env.storage().instance().set(&DataKey::Deployer, &deployer);
         env.storage().instance().set(
@@ -133,7 +133,8 @@ impl QuorumCreditContract {
     /// # Arguments
     /// * `voucher` - Address of the voucher staking tokens
     /// * `borrower` - Address of the borrower being vouched for
-    /// * `stake` - Amount of tokens to stake (must be positive)
+    /// * `stake` - Amount of tokens to stake, in stroops (must be positive).
+    ///   1 XLM = 10,000,000 stroops.
     /// * `token` - Address of the token contract to stake
     ///
     /// # Panics
@@ -159,7 +160,8 @@ impl QuorumCreditContract {
     /// # Arguments
     /// * `voucher` - Address of the voucher staking tokens
     /// * `borrowers` - Vector of borrower addresses
-    /// * `stakes` - Vector of stake amounts (must match borrowers length)
+    /// * `stakes` - Vector of stake amounts, in stroops (must match borrowers length).
+    ///   1 XLM = 10,000,000 stroops.
     /// * `token` - Address of the token contract to stake
     ///
     /// # Panics
@@ -181,7 +183,8 @@ impl QuorumCreditContract {
     /// # Arguments
     /// * `voucher` - Address of the voucher
     /// * `borrower` - Address of the borrower
-    /// * `additional` - Additional amount to stake (must be positive)
+    /// * `additional` - Additional amount to stake, in stroops (must be positive).
+    ///   1 XLM = 10,000,000 stroops.
     ///
     /// # Panics
     /// * If vouch does not exist
@@ -201,7 +204,8 @@ impl QuorumCreditContract {
     /// # Arguments
     /// * `voucher` - Address of the voucher
     /// * `borrower` - Address of the borrower
-    /// * `amount` - Amount to decrease (must be positive and not exceed current stake)
+    /// * `amount` - Amount to decrease, in stroops (must be positive and not exceed current stake).
+    ///   1 XLM = 10,000,000 stroops.
     ///
     /// # Panics
     /// * If vouch does not exist
@@ -298,7 +302,9 @@ impl QuorumCreditContract {
     /// * If bonus_bps exceeds 10000
     pub fn set_referral_bonus_bps(env: Env, admin_signers: Vec<Address>, bonus_bps: u32) {
         helpers::require_admin_approval(&env, &admin_signers);
-        assert!(bonus_bps <= 10_000, "bonus_bps must not exceed 10000");
+        if bonus_bps > 10_000 {
+            panic_with_error!(&env, ContractError::InvalidAmount);
+        }
         env.storage()
             .instance()
             .set(&DataKey::ReferralBonusBps, &bonus_bps);
@@ -310,17 +316,20 @@ impl QuorumCreditContract {
     /// * `u32` - The referral bonus in basis points
     pub fn get_referral_bonus_bps(env: Env) -> u32 {
         env.storage()
-            .instance()
-            .get(&DataKey::ReferralBonusBps)
-            .unwrap_or(crate::types::DEFAULT_REFERRAL_BONUS_BPS)
+            .persistent()
+            .set(&DataKey::Vouches(borrower), &vouches);
+        
+        Ok(())
     }
 
     /// Request a loan from the protocol.
     ///
     /// # Arguments
     /// * `borrower` - Address of the borrower
-    /// * `amount` - Loan amount in stroops
-    /// * `threshold` - Minimum total stake required from vouchers
+    /// * `amount` - Loan amount, in stroops (must be ≥ `min_loan_amount` and ≤ `max_loan_amount`).
+    ///   1 XLM = 10,000,000 stroops.
+    /// * `threshold` - Minimum total stake required from vouchers, in stroops.
+    ///   1 XLM = 10,000,000 stroops.
     /// * `loan_purpose` - Description of the loan purpose
     /// * `token` - Address of the token contract for the loan
     ///
@@ -342,8 +351,6 @@ impl QuorumCreditContract {
         borrower: Address,
         amount: i128,
         threshold: i128,
-        loan_purpose: soroban_sdk::String,
-        token: Address,
     ) -> Result<(), ContractError> {
         loan::request_loan(env, borrower, amount, threshold, loan_purpose, token)
     }
@@ -352,7 +359,8 @@ impl QuorumCreditContract {
     ///
     /// # Arguments
     /// * `borrower` - Address of the borrower
-    /// * `payment` - Payment amount in stroops (must be positive and not exceed outstanding balance)
+    /// * `payment` - Payment amount, in stroops (must be positive and not exceed outstanding balance).
+    ///   1 XLM = 10,000,000 stroops.
     ///
     /// # Panics
     /// * If borrower does not have an active loan
@@ -449,6 +457,32 @@ impl QuorumCreditContract {
         new_admin: Address,
     ) {
         admin::rotate_admin(env, admin_signers, old_admin, new_admin)
+    }
+
+    /// Propose a new admin (two-step admin transfer).
+    ///
+    /// # Arguments
+    /// * `admin_signers` - Vector of admin addresses (must meet current threshold)
+    /// * `new_admin` - Address of the proposed new admin
+    ///
+    /// # Returns
+    /// * `Result<(), ContractError>` - Success or error
+    ///
+    /// # Errors
+    /// * `ContractError::ZeroAddress` - If new_admin is the zero address
+    pub fn propose_admin(env: Env, admin_signers: Vec<Address>, new_admin: Address) -> Result<(), ContractError> {
+        admin::propose_admin(env, admin_signers, new_admin)
+    }
+
+    /// Accept the proposed admin transfer.
+    ///
+    /// # Returns
+    /// * `Result<(), ContractError>` - Success or error
+    ///
+    /// # Errors
+    /// * `ContractError::UnauthorizedCaller` - If no pending admin is set or caller is not the pending admin
+    pub fn accept_admin(env: Env) -> Result<(), ContractError> {
+        admin::accept_admin(env)
     }
 
     /// Set the admin threshold (minimum number of admins required for approval).
@@ -594,7 +628,8 @@ impl QuorumCreditContract {
     ///
     /// # Arguments
     /// * `admin_signers` - Vector of admin addresses (must meet threshold)
-    /// * `amount` - Minimum stake amount in stroops
+    /// * `amount` - Minimum stake amount, in stroops (0 = no minimum).
+    ///   1 XLM = 10,000,000 stroops.
     ///
     /// # Panics
     /// * If admin approval is insufficient
@@ -606,7 +641,8 @@ impl QuorumCreditContract {
     ///
     /// # Arguments
     /// * `admin_signers` - Vector of admin addresses (must meet threshold)
-    /// * `amount` - Maximum loan amount in stroops (0 = no cap)
+    /// * `amount` - Maximum loan amount, in stroops (0 = no cap).
+    ///   1 XLM = 10,000,000 stroops.
     ///
     /// # Panics
     /// * If admin approval is insufficient
@@ -638,6 +674,10 @@ impl QuorumCreditContract {
         admin::set_max_loan_to_stake_ratio(env, admin_signers, ratio)
     }
 
+    pub fn set_grace_period(env: Env, admin_signers: Vec<Address>, period: u64) {
+        admin::set_grace_period(env, admin_signers, period)
+    }
+
     /// Add a token to the allowed tokens list.
     ///
     /// # Arguments
@@ -650,7 +690,7 @@ impl QuorumCreditContract {
         admin::set_max_vouchers_per_borrower(env, admin_signers, max_vouchers)
     }
 
-    pub fn add_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) {
+    pub fn add_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) -> Result<(), ContractError> {
         admin::add_allowed_token(env, admin_signers, token)
     }
 
@@ -749,9 +789,23 @@ impl QuorumCreditContract {
     /// * `i128` - The slash treasury balance in stroops
     pub fn get_slash_treasury_balance(env: Env) -> i128 {
         env.storage()
-            .instance()
-            .get(&DataKey::SlashTreasury)
-            .unwrap_or(0)
+            .persistent()
+            .set(&DataKey::Loan(borrower.clone()), &loan);
+
+    /// Withdraw funds from the slash treasury to a recipient address.
+    /// Admin-gated. Emits an admin/slshwdraw event on success.
+    ///
+    /// # Arguments
+    /// * `admin_signers` - Vector of admin addresses (must meet threshold)
+    /// * `recipient` - Address to receive the withdrawn funds
+    /// * `amount` - Amount to withdraw in stroops (must be > 0)
+    pub fn withdraw_slash_treasury(
+        env: Env,
+        admin_signers: Vec<Address>,
+        recipient: Address,
+        amount: i128,
+    ) {
+        admin::withdraw_slash_treasury(env, admin_signers, recipient, amount)
     }
 
     /// Check if the contract is paused.
@@ -760,9 +814,8 @@ impl QuorumCreditContract {
     /// * `bool` - True if paused, false otherwise
     pub fn get_paused(env: Env) -> bool {
         env.storage()
-            .instance()
-            .get(&DataKey::Paused)
-            .unwrap_or(false)
+            .persistent()
+            .set(&DataKey::Credit(borrower), &credit);
     }
 
     /// Get the loan status for a borrower.
@@ -836,12 +889,14 @@ impl QuorumCreditContract {
     ///
     /// # Arguments
     /// * `borrower` - Address of the borrower
-    /// * `threshold` - Minimum total stake required
+    /// * `threshold` - Minimum total stake required, in stroops.
+    ///   1 XLM = 10,000,000 stroops.
+    /// * `token_addr` - Token address to filter vouches by
     ///
     /// # Returns
     /// * `bool` - True if eligible, false otherwise
-    pub fn is_eligible(env: Env, borrower: Address, threshold: i128) -> bool {
-        loan::is_eligible(env, borrower, threshold)
+    pub fn is_eligible(env: Env, borrower: Address, threshold: i128, token_addr: Address) -> bool {
+        loan::is_eligible(env, borrower, threshold, token_addr)
     }
 
     /// Get the contract's token balance.
@@ -874,13 +929,11 @@ impl QuorumCreditContract {
         let nft_addr: Address = match env
             .storage()
             .instance()
-            .get::<DataKey, Address>(&DataKey::ReputationNft)
-        {
-            Some(a) => a,
-            None => return 0,
-        };
-        ReputationNftExternalClient::new(&env, &nft_addr).balance(&borrower)
+            .get(&DataKey::Token)
+            .expect("not initialized");
+        token::Client::new(env, &addr)
     }
+}
 
     /// Get the total amount vouched for a borrower.
     ///
@@ -1003,14 +1056,7 @@ impl QuorumCreditContract {
         admin::get_max_vouchers_per_borrower(env)
     }
 
-    /// Issue 109: Propose a slash action with a confirmation window (timelock delay).
-    pub fn propose_slash(
-        env: Env,
-        proposer: Address,
-        borrower: Address,
-        delay_secs: u64,
-    ) -> Result<u64, ContractError> {
-        governance::propose_slash(env, proposer, borrower, delay_secs)
+        assert_eq!(token.balance(&voucher), 10_020_000);
     }
 
     /// Issue 109: Execute a previously proposed slash after the delay has passed.
@@ -1059,5 +1105,21 @@ impl QuorumCreditContract {
     /// * `Option<SlashVoteRecord>` - The slash vote record if exists, None otherwise
     pub fn get_slash_vote(env: Env, borrower: Address) -> Option<SlashVoteRecord> {
         governance::get_slash_vote(env, borrower)
+    }
+
+    /// Execute a slash vote if quorum has been met.
+    ///
+    /// # Arguments
+    /// * `borrower` - Address of the borrower whose slash vote to execute
+    ///
+    /// # Returns
+    /// * `Result<(), ContractError>` - Success or error
+    ///
+    /// # Errors
+    /// * `ContractError::SlashVoteNotFound` - If no slash vote exists for the borrower
+    /// * `ContractError::SlashAlreadyExecuted` - If the slash has already been executed
+    /// * `ContractError::QuorumNotMet` - If the approval stake does not meet the quorum threshold
+    pub fn execute_slash_vote(env: Env, borrower: Address) -> Result<(), ContractError> {
+        governance::execute_slash_vote(env, borrower)
     }
 }

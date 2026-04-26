@@ -1,7 +1,7 @@
 use crate::errors::ContractError;
 use crate::helpers::{
-    bps_of, config, get_active_loan_record, get_slash_balance, has_active_loan, next_loan_id,
-    require_allowed_token, require_not_paused, validate_loan_active,
+    bps_of, config, extend_ttl, get_active_loan_record, get_slash_balance, has_active_loan,
+    next_loan_id, require_allowed_token, require_not_paused, validate_loan_active,
 };
 use crate::reputation::ReputationNftExternalClient;
 use crate::types::{
@@ -62,6 +62,23 @@ pub fn request_loan(
         .unwrap_or(false)
     {
         return Err(ContractError::Blacklisted);
+    }
+
+    // Borrower whitelist check: if enabled, borrower must be whitelisted.
+    let whitelist_enabled: bool = env
+        .storage()
+        .instance()
+        .get(&DataKey::BorrowerWhitelistEnabled)
+        .unwrap_or(false);
+    if whitelist_enabled {
+        let whitelisted: bool = env
+            .storage()
+            .persistent()
+            .get(&DataKey::BorrowerWhitelist(borrower.clone()))
+            .unwrap_or(false);
+        if !whitelisted {
+            return Err(ContractError::Blacklisted);
+        }
     }
 
     // Validate token is allowed before any other checks.
@@ -142,7 +159,13 @@ pub fn request_loan(
 
     let deadline = now + cfg.loan_duration;
     let loan_id = next_loan_id(&env);
-    let total_yield = bps_of(amount, cfg.yield_bps);
+    let yield_bps = env
+        .storage()
+        .persistent()
+        .get::<crate::types::DataKey, crate::types::TokenConfig>(&crate::types::DataKey::TokenConfig(token_addr.clone()))
+        .map(|tc| tc.yield_bps)
+        .unwrap_or(cfg.yield_bps);
+    let total_yield = bps_of(amount, yield_bps);
 
     env.storage().persistent().set(
         &DataKey::Loan(loan_id),
@@ -203,7 +226,7 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
             // Check if there's a latest loan that is already repaid
             if let Some(latest_loan) = crate::helpers::get_latest_loan_record(&env, &borrower) {
                 if latest_loan.status == LoanStatus::Repaid {
-                    panic!("loan already repaid");
+                    return Err(ContractError::AlreadyRepaid);
                 }
             }
             return Err(ContractError::NoActiveLoan);
@@ -369,6 +392,14 @@ pub fn get_loan_by_id(env: Env, loan_id: u64) -> Option<LoanRecord> {
     env.storage().persistent().get(&DataKey::Loan(loan_id))
 }
 
+pub fn get_loan_status(env: Env, loan_id: u64) -> LoanStatus {
+    env.storage()
+        .persistent()
+        .get::<DataKey, LoanRecord>(&DataKey::Loan(loan_id))
+        .map(|l| l.status)
+        .unwrap_or(LoanStatus::None)
+}
+
 pub fn is_eligible(env: Env, borrower: Address, threshold: i128) -> bool {
     if threshold <= 0 {
         return false;
@@ -388,6 +419,13 @@ pub fn is_eligible(env: Env, borrower: Address, threshold: i128) -> bool {
 
     let total_stake: i128 = vouches.iter().map(|v| v.amount).sum();
     total_stake >= threshold
+}
+
+pub fn get_loan_purpose(env: Env, loan_id: u64) -> Option<soroban_sdk::String> {
+    env.storage()
+        .persistent()
+        .get::<DataKey, LoanRecord>(&DataKey::Loan(loan_id))
+        .map(|l| l.loan_purpose)
 }
 
 pub fn repayment_count(env: Env, borrower: Address) -> u32 {

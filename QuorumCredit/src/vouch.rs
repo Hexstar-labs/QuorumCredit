@@ -1,6 +1,6 @@
 use crate::errors::ContractError;
 use crate::helpers::{
-    has_active_loan, require_allowed_token, require_not_paused, require_positive_amount,
+    extend_ttl, has_active_loan, require_allowed_token, require_not_paused, require_positive_amount,
 };
 use crate::types::{DataKey, VouchRecord};
 use soroban_sdk::{symbol_short, Address, Env, Vec};
@@ -14,6 +14,24 @@ pub fn vouch(
 ) -> Result<(), ContractError> {
     voucher.require_auth();
     require_not_paused(&env)?;
+
+    // Voucher whitelist check: if enabled, voucher must be whitelisted.
+    let whitelist_enabled: bool = env
+        .storage()
+        .instance()
+        .get(&DataKey::VoucherWhitelistEnabled)
+        .unwrap_or(false);
+    if whitelist_enabled {
+        let whitelisted: bool = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VoucherWhitelist(voucher.clone()))
+            .unwrap_or(false);
+        if !whitelisted {
+            return Err(ContractError::VoucherNotWhitelisted);
+        }
+    }
+
     do_vouch(&env, voucher, borrower, stake, token)
 }
 
@@ -183,6 +201,9 @@ pub fn decrease_stake(
     voucher.require_auth();
     require_not_paused(&env)?;
 
+    if voucher == borrower {
+        return Err(ContractError::SelfVouchNotAllowed);
+    }
     assert!(amount > 0, "decrease amount must be greater than zero");
     assert!(!has_active_loan(&env, &borrower), "loan already active");
 
@@ -198,7 +219,10 @@ pub fn decrease_stake(
         .expect("vouch not found") as u32;
 
     let mut vouch_rec = vouches.get(idx).unwrap();
-    assert!(amount <= vouch_rec.amount, "decrease amount exceeds staked amount");
+    assert!(
+        amount <= vouch_rec.amount,
+        "decrease amount exceeds staked amount"
+    );
 
     let token_client = require_allowed_token(&env, &vouch_rec.token)?;
     vouch_rec.amount -= amount;
@@ -209,7 +233,9 @@ pub fn decrease_stake(
     }
 
     if vouches.is_empty() {
-        env.storage().persistent().remove(&DataKey::Vouches(borrower));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Vouches(borrower));
     } else {
         env.storage()
             .persistent()
@@ -389,7 +415,8 @@ mod tests {
     use soroban_sdk::{testutils::Address as _, Address, Env, Vec};
 
     fn create_test_token(env: &Env) -> Address {
-        Address::generate(env)
+        let admin = Address::generate(env);
+        env.register_stellar_asset_contract_v2(admin).address()
     }
 
     fn create_test_admin(env: &Env) -> Address {
@@ -493,5 +520,27 @@ mod tests {
         // Test that total_vouched returns correct sum
         let result = client.total_vouched(&borrower);
         assert_eq!(result, 3_500_000);
+    }
+
+    /// Issue #442: decrease_stake() must reject self-vouch (voucher == borrower)
+    #[test]
+    fn test_decrease_stake_self_vouch_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        let deployer = Address::generate(&env);
+        let admin = create_test_admin(&env);
+        let admins = Vec::from_array(&env, [admin.clone()]);
+        let token = create_test_token(&env);
+
+        client.initialize(&deployer, &admins, &1, &token);
+
+        let user = Address::generate(&env);
+
+        let result = client.try_decrease_stake(&user, &user, &1_000);
+        assert_eq!(result, Err(Ok(ContractError::SelfVouchNotAllowed)));
     }
 }

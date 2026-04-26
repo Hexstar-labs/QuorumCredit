@@ -5,9 +5,37 @@ use crate::helpers::{
 };
 use crate::reputation::ReputationNftExternalClient;
 use crate::types::{
-    DataKey, LoanRecord, LoanStatus, VouchRecord, DEFAULT_REFERRAL_BONUS_BPS, MIN_VOUCH_AGE,
+    DataKey, LoanRecord, LoanStatus, VouchRecord, BPS_DENOMINATOR, DEFAULT_REFERRAL_BONUS_BPS,
+    MIN_VOUCH_AGE,
 };
 use soroban_sdk::{panic_with_error, symbol_short, Address, Env, Vec};
+
+/// Calculate dynamic yield in basis points for a borrower.
+///
+/// Formula: `base_yield_bps + (credit_score / 100) - (default_count * 50)`
+/// Result is floored at 0.
+///
+/// * `credit_score` — reputation NFT balance (0 if no NFT contract configured)
+/// * `default_count` — number of past defaults for the borrower
+pub fn calculate_dynamic_yield(env: &Env, borrower: &Address) -> i128 {
+    let base_bps = config(env).yield_bps;
+
+    let credit_score: i128 = env
+        .storage()
+        .instance()
+        .get::<DataKey, Address>(&DataKey::ReputationNft)
+        .map(|nft_addr| ReputationNftExternalClient::new(env, &nft_addr).balance(borrower) as i128)
+        .unwrap_or(0);
+
+    let default_count: i128 = env
+        .storage()
+        .persistent()
+        .get::<DataKey, u32>(&DataKey::DefaultCount(borrower.clone()))
+        .unwrap_or(0) as i128;
+
+    let dynamic_bps = base_bps + (credit_score / 100) - (default_count * 50);
+    dynamic_bps.max(0)
+}
 
 /// Register a referrer for a borrower. Must be called before `request_loan`.
 /// The referrer cannot be the borrower themselves.
@@ -19,11 +47,12 @@ pub fn register_referral(
     borrower.require_auth();
     require_not_paused(&env)?;
 
-    assert!(borrower != referrer, "borrower cannot refer themselves");
-    assert!(
-        !has_active_loan(&env, &borrower),
-        "cannot set referral with active loan"
-    );
+    if borrower == referrer {
+        panic_with_error!(&env, ContractError::UnauthorizedCaller);
+    }
+    if has_active_loan(&env, &borrower) {
+        return Err(ContractError::ActiveLoanExists);
+    }
     // Idempotent: overwrite is fine (borrower signs).
     env.storage()
         .persistent()
@@ -43,6 +72,17 @@ pub fn get_referrer(env: Env, borrower: Address) -> Option<Address> {
         .get(&DataKey::ReferredBy(borrower))
 }
 
+/// Request a loan disbursement.
+///
+/// # Arguments
+/// * `env` - Soroban environment
+/// * `borrower` - Address of the borrower (must sign)
+/// * `amount` - Loan amount, in stroops. Must be ≥ `min_loan_amount`.
+///   1 XLM = 10,000,000 stroops.
+/// * `threshold` - Minimum total vouched stake required, in stroops.
+///   1 XLM = 10,000,000 stroops.
+/// * `loan_purpose` - Human-readable description of the loan purpose
+/// * `token_addr` - Address of the token contract to use for disbursement
 pub fn request_loan(
     env: Env,
     borrower: Address,
@@ -71,7 +111,9 @@ pub fn request_loan(
     if amount < cfg.min_loan_amount {
         return Err(ContractError::LoanBelowMinAmount);
     }
-    assert!(threshold > 0, "threshold must be greater than zero");
+    if threshold <= 0 {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
 
     let max_loan_amount: i128 = env
         .storage()
@@ -82,10 +124,9 @@ pub fn request_loan(
         return Err(ContractError::LoanExceedsMaxAmount);
     }
 
-    assert!(
-        !has_active_loan(&env, &borrower),
-        "borrower already has an active loan"
-    );
+    if has_active_loan(&env, &borrower) {
+        return Err(ContractError::ActiveLoanExists);
+    }
 
     let vouches: Vec<VouchRecord> = env
         .storage()
@@ -128,10 +169,9 @@ pub fn request_loan(
     }
 
     let max_allowed_loan = total_stake * cfg.max_loan_to_stake_ratio as i128 / 100;
-    assert!(
-        amount <= max_allowed_loan,
-        "loan amount exceeds maximum collateral ratio"
-    );
+    if amount > max_allowed_loan {
+        panic_with_error!(&env, ContractError::LoanExceedsMaxAmount);
+    }
 
     let contract_balance = token_client.balance(&env.current_contract_address());
     if contract_balance < amount {
@@ -140,7 +180,8 @@ pub fn request_loan(
 
     let deadline = now + cfg.loan_duration;
     let loan_id = next_loan_id(&env);
-    let total_yield = amount * cfg.yield_bps / 10_000;
+    let dynamic_yield_bps = calculate_dynamic_yield(&env, &borrower);
+    let total_yield = amount * dynamic_yield_bps / 10_000; // stroops
 
     env.storage().persistent().set(
         &DataKey::Loan(loan_id),
@@ -158,9 +199,6 @@ pub fn request_loan(
             deadline,
             loan_purpose,
             token_address: token_addr.clone(),
-            collateral_amount: 0,
-            is_refinance: false,
-            original_loan_id: None,
         },
     );
     env.storage()
@@ -189,41 +227,45 @@ pub fn request_loan(
     Ok(())
 }
 
+/// Repay a loan, partially or fully.
+///
+/// # Arguments
+/// * `env` - Soroban environment
+/// * `borrower` - Address of the borrower (must sign)
+/// * `payment` - Payment amount, in stroops (must be > 0 and ≤ outstanding balance).
+///   1 XLM = 10,000,000 stroops.
 pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractError> {
     borrower.require_auth();
     require_not_paused(&env)?;
 
     let mut loan = get_active_loan_record(&env, &borrower)?;
 
+    if borrower != loan.borrower {
+        return Err(ContractError::UnauthorizedCaller);
+    }
+
     for cb in loan.co_borrowers.iter() {
         cb.require_auth();
     }
 
-    if borrower != loan.borrower {
-        return Err(ContractError::UnauthorizedCaller);
-    }
     if loan.status != LoanStatus::Active {
         return Err(ContractError::NoActiveLoan);
     }
-    assert!(
-        env.ledger().timestamp() <= loan.deadline,
-        "loan deadline has passed"
-    );
+    if env.ledger().timestamp() > loan.deadline {
+        panic_with_error!(&env, ContractError::LoanPastDeadline);
+    }
 
-    // Total obligation = principal + yield locked in at disbursement.
     let total_owed = loan.amount + loan.total_yield;
     let outstanding = total_owed - loan.amount_repaid;
-    assert!(
-        payment > 0 && payment <= outstanding,
-        "invalid payment amount"
-    );
+    if payment <= 0 || payment > outstanding {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
 
     let token = soroban_sdk::token::Client::new(&env, &loan.token_address);
 
     // Issue #542: Calculate prepayment penalty if repaying early
     let cfg = config(&env);
     let now = env.ledger().timestamp();
-    let time_elapsed = now - loan.disbursement_timestamp;
     let time_remaining = if loan.deadline > now {
         loan.deadline - now
     } else {
@@ -251,6 +293,28 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
         // Issue 112: Only distribute yield to vouches in the same token as the loan.
         let loan_token = soroban_sdk::token::Client::new(&env, &loan.token_address);
 
+        // Issue #367: Collect protocol fee before distributing yield
+        let protocol_fee_bps: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProtocolFeeBps)
+            .unwrap_or(0);
+        let protocol_fee = crate::helpers::bps_of(loan.amount, protocol_fee_bps);
+
+        if protocol_fee > 0 {
+            if let Some(fee_treasury) = env
+                .storage()
+                .instance()
+                .get::<DataKey, Address>(&DataKey::FeeTreasury)
+            {
+                loan_token.transfer(
+                    &env.current_contract_address(),
+                    &fee_treasury,
+                    &protocol_fee,
+                );
+            }
+        }
+
         let mut total_stake: i128 = 0;
         for v in vouches.iter() {
             if v.token == loan.token_address {
@@ -258,6 +322,7 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
             }
         }
 
+        // Issue 112: Ensure yield distribution respects available funds (excluding slash balance)
         // Issue #542: Add prepayment penalty to yield distribution
         let available_for_yield = loan.total_yield + prepayment_penalty;
         let mut total_distributed: i128 = 0;
@@ -273,11 +338,9 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
             };
             total_distributed += voucher_yield;
 
-            // Assert that we're not exceeding available yield
-            assert!(
-                total_distributed <= available_for_yield,
-                "yield distribution would exceed available funds"
-            );
+            if total_distributed > available_for_yield {
+                panic_with_error!(&env, ContractError::InsufficientFunds);
+            }
 
             loan_token.transfer(
                 &env.current_contract_address(),
@@ -300,15 +363,18 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
                 .instance()
                 .get(&DataKey::ReferralBonusBps)
                 .unwrap_or(DEFAULT_REFERRAL_BONUS_BPS);
-            let bonus = loan.amount * bonus_bps as i128 / 10_000;
+            let bonus = loan.amount * bonus_bps as i128 / BPS_DENOMINATOR;
 
-            // Issue 112: Ensure bonus doesn't use slash funds
+            // Issue 369: Check contract balance before transferring bonus
             if bonus > 0 {
-                loan_token.transfer(&env.current_contract_address(), &referrer, &bonus);
-                env.events().publish(
-                    (symbol_short!("referral"), symbol_short!("bonus")),
-                    (referrer, borrower.clone(), bonus),
-                );
+                let contract_balance = loan_token.balance(&env.current_contract_address());
+                if contract_balance >= bonus {
+                    loan_token.transfer(&env.current_contract_address(), &referrer, &bonus);
+                    env.events().publish(
+                        (symbol_short!("referral"), symbol_short!("bonus")),
+                        (referrer, borrower.clone(), bonus),
+                    );
+                }
             }
         }
 
@@ -364,7 +430,7 @@ pub fn get_loan_by_id(env: Env, loan_id: u64) -> Option<LoanRecord> {
     env.storage().persistent().get(&DataKey::Loan(loan_id))
 }
 
-pub fn is_eligible(env: Env, borrower: Address, threshold: i128) -> bool {
+pub fn is_eligible(env: Env, borrower: Address, threshold: i128, token_addr: Address) -> bool {
     if threshold <= 0 {
         return false;
     }
@@ -381,7 +447,11 @@ pub fn is_eligible(env: Env, borrower: Address, threshold: i128) -> bool {
         .get(&DataKey::Vouches(borrower))
         .unwrap_or(Vec::new(&env));
 
-    let total_stake: i128 = vouches.iter().map(|v| v.stake).sum();
+    let total_stake: i128 = vouches
+        .iter()
+        .filter(|v| v.token == token_addr)
+        .map(|v| v.stake)
+        .sum();
     total_stake >= threshold
 }
 
@@ -404,6 +474,71 @@ pub fn default_count(env: Env, borrower: Address) -> u32 {
         .persistent()
         .get(&DataKey::DefaultCount(borrower))
         .unwrap_or(0)
+}
+
+/// Emit `repayment_reminder` events for all active loans whose deadline is within 7 days.
+///
+/// Off-chain systems can listen for these events to notify borrowers.
+pub fn emit_repayment_reminders(env: Env) {
+    const SEVEN_DAYS: u64 = 7 * 24 * 60 * 60;
+    let now = env.ledger().timestamp();
+    let counter: u64 = env
+        .storage()
+        .instance()
+        .get(&DataKey::LoanCounter)
+        .unwrap_or(0);
+
+    for id in 1..=counter {
+        if let Some(loan) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, crate::types::LoanRecord>(&DataKey::Loan(id))
+        {
+            if loan.status == LoanStatus::Active
+                && loan.deadline > now
+                && loan.deadline - now <= SEVEN_DAYS
+            {
+                env.events().publish(
+                    (symbol_short!("repay"), symbol_short!("reminder")),
+                    (loan.borrower, loan.deadline),
+                );
+            }
+        }
+    }
+}
+
+/// Mint a reputation NFT for a borrower who has successfully repaid at least one loan.
+///
+/// # Errors
+/// * `NoActiveLoan` — borrower has never repaid a loan (repayment_count == 0)
+/// * `NoActiveLoan` — no reputation NFT contract is configured
+pub fn mint_reputation_nft(env: Env, borrower: Address) -> Result<(), ContractError> {
+    borrower.require_auth();
+
+    let repaid: u32 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::RepaymentCount(borrower.clone()))
+        .unwrap_or(0);
+
+    if repaid == 0 {
+        return Err(ContractError::NoActiveLoan);
+    }
+
+    let nft_addr: Address = env
+        .storage()
+        .instance()
+        .get(&DataKey::ReputationNft)
+        .ok_or(ContractError::NoActiveLoan)?;
+
+    ReputationNftExternalClient::new(&env, &nft_addr).mint(&borrower);
+
+    env.events().publish(
+        (symbol_short!("rep"), symbol_short!("minted")),
+        borrower,
+    );
+
+    Ok(())
 }
 
 /// Issue #539: Refinance an existing loan with new terms.

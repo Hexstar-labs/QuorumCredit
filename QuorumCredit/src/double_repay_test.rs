@@ -32,13 +32,17 @@ mod double_repay_tests {
 
         env.ledger().with_mut(|l| l.timestamp = 120);
 
-        Setup { env, client, token: token_id.address() }
+        Setup {
+            env,
+            client,
+            token: token_id.address(),
+        }
     }
 
     fn do_vouch(s: &Setup, voucher: &Address, borrower: &Address, stake: i128) {
         StellarAssetClient::new(&s.env, &s.token).mint(voucher, &stake);
         s.client.vouch(voucher, borrower, &stake, &s.token);
-        
+
         // Advance time past MIN_VOUCH_AGE (60s) so the vouch is eligible.
         s.env.ledger().with_mut(|l| l.timestamp += 61);
     }
@@ -53,9 +57,8 @@ mod double_repay_tests {
         );
     }
 
-    /// Calling repay twice must panic with "loan already repaid" on the second call.
+    /// Calling repay twice must return AlreadyRepaid error on the second call.
     #[test]
-    #[should_panic(expected = "loan already repaid")]
     fn test_repay_panics_when_loan_already_repaid() {
         let s = setup();
         let borrower = Address::generate(&s.env);
@@ -84,8 +87,9 @@ mod double_repay_tests {
         assert!(loan.is_some(), "loan should exist");
         assert_eq!(loan.unwrap().status, crate::LoanStatus::Repaid);
 
-        // Second repay - must panic with "loan already repaid"
-        s.client.repay(&borrower, &total_owed);
+        // Second repay - must return AlreadyRepaid error
+        let result = s.client.try_repay(&borrower, &total_owed);
+        assert_eq!(result, Err(Ok(crate::ContractError::AlreadyRepaid)));
     }
 
     /// Verify that partial repayments are allowed until loan is fully repaid

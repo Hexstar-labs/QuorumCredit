@@ -60,11 +60,15 @@ pub enum DataKey {
     TimelockCounter, // u64 monotonically increasing proposal ID
     Blacklisted(Address), // borrower → bool permanently banned
     VoucherWhitelist(Address), // voucher → bool allowed to vouch
+    VoucherWhitelistEnabled,   // bool: true when voucher whitelist is enforced
+    BorrowerWhitelist(Address), // borrower → bool allowed to request loans
+    BorrowerWhitelistEnabled,  // bool: true when borrower whitelist is enforced
+    TokenConfig(Address),      // token → TokenConfig (per-token yield/slash overrides)
     ExtensionConsents(Address), // borrower → Vec<Address> vouchers who consented to extension
-    SlashVote(Address),         // borrower → SlashVoteRecord
-    SlashVoteQuorum,            // u32 quorum in basis points (e.g. 5000 = 50%)
-    ReferredBy(Address),        // borrower → Address of referrer
-    ReferralBonusBps,           // u32 referral bonus in basis points (default 100 = 1%)
+    SlashVote(Address), // borrower → SlashVoteRecord
+    SlashVoteQuorum, // u32 quorum in basis points (e.g. 5000 = 50%)
+    ReferredBy(Address), // borrower → Address of referrer
+    ReferralBonusBps, // u32 referral bonus in basis points (default 100 = 1%)
 }
 
 // ── Governance ────────────────────────────────────────────────────────────────
@@ -72,10 +76,10 @@ pub enum DataKey {
 #[contracttype]
 #[derive(Clone)]
 pub struct SlashVoteRecord {
-    pub approve_stake: i128,    // total stake voting to approve slash
-    pub reject_stake: i128,     // total stake voting to reject slash
-    pub voters: Vec<Address>,   // addresses that have already voted
-    pub executed: bool,         // true once slash has been auto-executed
+    pub approve_stake: i128,  // total stake voting to approve slash
+    pub reject_stake: i128,   // total stake voting to reject slash
+    pub voters: Vec<Address>, // addresses that have already voted
+    pub executed: bool,       // true once slash has been auto-executed
 }
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -96,6 +100,17 @@ pub struct Config {
     pub grace_period: u64,
 }
 
+// ── Per-Token Config ──────────────────────────────────────────────────────────
+
+/// Per-token overrides for yield and slash parameters.
+/// When set, these values take precedence over the global `Config` values.
+#[contracttype]
+#[derive(Clone)]
+pub struct TokenConfig {
+    pub yield_bps: i128,
+    pub slash_bps: i128,
+}
+
 // ── Data Types ────────────────────────────────────────────────────────────────
 
 #[contracttype]
@@ -108,12 +123,12 @@ pub struct LoanRecord {
     pub amount_repaid: i128, // cumulative repayments received so far (principal + yield)
     pub total_yield: i128,   // yield owed to vouchers, locked in at disbursement
     pub status: LoanStatus,
-    pub created_at: u64,                  // ledger timestamp
-    pub disbursement_timestamp: u64,      // ledger timestamp
-    pub repayment_timestamp: Option<u64>, // set once the loan is fully repaid
-    pub deadline: u64,                    // repayment deadline (ledger timestamp)
+    pub created_at: u64,                   // ledger timestamp
+    pub disbursement_timestamp: u64,       // ledger timestamp
+    pub repayment_timestamp: Option<u64>,  // set once the loan is fully repaid
+    pub deadline: u64,                     // repayment deadline (ledger timestamp)
     pub loan_purpose: soroban_sdk::String, // borrower-supplied purpose string
-    pub token_address: Address,           // token used for this loan
+    pub token_address: Address,            // token used for this loan
 }
 
 #[contracttype]

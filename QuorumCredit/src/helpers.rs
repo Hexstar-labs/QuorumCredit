@@ -101,20 +101,18 @@ pub fn get_latest_loan_record(env: &Env, borrower: &Address) -> Option<LoanRecor
         .persistent()
         .get(&DataKey::LatestLoan(borrower.clone()))
     {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Loan(loan_id))
+        env.storage().persistent().get(&DataKey::Loan(loan_id))
     } else {
         None
     }
 }
 
 /// Validates that a loan record is in Active status.
-/// Returns `Err(NoActiveLoan)` for non-active loans, panics with a message for already-repaid loans.
+/// Returns `Err(AlreadyRepaid)` for repaid loans, `Err(NoActiveLoan)` for other non-active loans.
 pub fn validate_loan_active(loan: &LoanRecord) -> Result<(), ContractError> {
     if loan.status != crate::types::LoanStatus::Active {
         if loan.status == crate::types::LoanStatus::Repaid {
-            panic!("loan already repaid");
+            return Err(ContractError::AlreadyRepaid);
         } else {
             return Err(ContractError::NoActiveLoan);
         }
@@ -239,7 +237,11 @@ pub fn validate_admin_config(
 mod ttl_tests {
     use super::*;
     use crate::{QuorumCreditContract, QuorumCreditContractClient};
-    use soroban_sdk::{testutils::Address as _, Address, Env, Vec};
+    use soroban_sdk::{
+        testutils::Address as _,
+        token::{StellarAssetClient, TokenClient},
+        Address, Env, Vec,
+    };
 
     /// Verify extend_ttl does not panic when called on an existing persistent key.
     #[test]
@@ -253,7 +255,9 @@ mod ttl_tests {
         let deployer = Address::generate(&env);
         let admin = Address::generate(&env);
         let admins = Vec::from_array(&env, [admin.clone()]);
-        let token = Address::generate(&env);
+        let token = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
 
         client.initialize(&deployer, &admins, &1, &token);
 

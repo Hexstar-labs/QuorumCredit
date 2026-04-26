@@ -14,29 +14,55 @@ pub mod types;
 pub mod vouch;
 
 #[cfg(test)]
+mod bug_condition_test;
+#[cfg(test)]
+mod borrower_whitelist_test;
+#[cfg(test)]
+mod config_bps_test;
+#[cfg(test)]
+mod invalid_bps_test;
+#[cfg(test)]
+mod grace_period_test;
+#[cfg(test)]
+mod double_repay_test;
+#[cfg(test)]
+mod duplicate_loan_test;
+#[cfg(test)]
+mod duplicate_vouch_test;
+#[cfg(test)]
+mod get_loan_status_test;
+#[cfg(test)]
 mod governance_test;
 #[cfg(test)]
 mod initialize_test;
 #[cfg(test)]
 mod loan_purpose_test;
 #[cfg(test)]
+mod loan_purpose_query_test;
+#[cfg(test)]
 mod multi_asset_test;
 #[cfg(test)]
 mod referral_test;
 #[cfg(test)]
-mod request_loan_insufficient_stake_test;
+mod repay_overpayment_test;
 #[cfg(test)]
-mod vouch_zero_stake_test;
+mod request_loan_insufficient_stake_test;
 #[cfg(test)]
 mod security_fixes_test;
 #[cfg(test)]
-mod bug_condition_test;
+mod max_loan_amount_test;
 #[cfg(test)]
-mod duplicate_loan_test;
-#[cfg(test)]
-mod double_repay_test;
+mod set_min_loan_amount_test;
 #[cfg(test)]
 mod simple_double_repay_test;
+#[cfg(test)]
+mod token_config_test;
+#[cfg(test)]
+mod vouch_min_stake_test;
+#[cfg(test)]
+mod vouch_zero_stake_test;
+#[cfg(test)]
+mod voucher_whitelist_test;
 
 pub use errors::ContractError;
 pub use types::*;
@@ -62,13 +88,6 @@ impl QuorumCreditContract {
         if env.storage().instance().has(&DataKey::Config) {
             panic_with_error!(&env, ContractError::AlreadyInitialized);
         }
-
-        validate_admin_config(&env, &admins, admin_threshold).expect("invalid admin config");
-        require_valid_token(&env, &token).expect("invalid token");
-        assert!(
-            !env.storage().instance().has(&DataKey::Config),
-            "already initialized"
-        );
 
         validate_admin_config(&env, &admins, admin_threshold)?;
         require_valid_token(&env, &token)?;
@@ -230,6 +249,42 @@ impl QuorumCreditContract {
         admin::whitelist_voucher(env, admin_signers, voucher)
     }
 
+    pub fn add_voucher_to_whitelist(env: Env, admin_signers: Vec<Address>, voucher: Address) {
+        admin::add_voucher_to_whitelist(env, admin_signers, voucher)
+    }
+
+    pub fn remove_voucher_from_whitelist(env: Env, admin_signers: Vec<Address>, voucher: Address) {
+        admin::remove_voucher_from_whitelist(env, admin_signers, voucher)
+    }
+
+    pub fn enable_voucher_whitelist(env: Env, admin_signers: Vec<Address>) {
+        admin::enable_voucher_whitelist(env, admin_signers)
+    }
+
+    pub fn disable_voucher_whitelist(env: Env, admin_signers: Vec<Address>) {
+        admin::disable_voucher_whitelist(env, admin_signers)
+    }
+
+    pub fn add_borrower_to_whitelist(env: Env, admin_signers: Vec<Address>, borrower: Address) {
+        admin::add_borrower_to_whitelist(env, admin_signers, borrower)
+    }
+
+    pub fn remove_borrower_from_whitelist(
+        env: Env,
+        admin_signers: Vec<Address>,
+        borrower: Address,
+    ) {
+        admin::remove_borrower_from_whitelist(env, admin_signers, borrower)
+    }
+
+    pub fn enable_borrower_whitelist(env: Env, admin_signers: Vec<Address>) {
+        admin::enable_borrower_whitelist(env, admin_signers)
+    }
+
+    pub fn disable_borrower_whitelist(env: Env, admin_signers: Vec<Address>) {
+        admin::disable_borrower_whitelist(env, admin_signers)
+    }
+
     pub fn set_fee_treasury(env: Env, admin_signers: Vec<Address>, treasury: Address) {
         admin::set_fee_treasury(env, admin_signers, treasury)
     }
@@ -271,6 +326,14 @@ impl QuorumCreditContract {
         admin::set_min_stake(env, admin_signers, amount)
     }
 
+    pub fn set_min_loan_amount(
+        env: Env,
+        admin_signers: Vec<Address>,
+        amount: i128,
+    ) -> Result<(), ContractError> {
+        admin::set_min_loan_amount(env, admin_signers, amount)
+    }
+
     pub fn set_max_loan_amount(env: Env, admin_signers: Vec<Address>, amount: i128) {
         admin::set_max_loan_amount(env, admin_signers, amount)
     }
@@ -283,12 +346,25 @@ impl QuorumCreditContract {
         admin::set_max_loan_to_stake_ratio(env, admin_signers, ratio)
     }
 
-    pub fn add_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) {
+    pub fn add_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) -> Result<(), ContractError> {
         admin::add_allowed_token(env, admin_signers, token)
     }
 
     pub fn remove_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) {
         admin::remove_allowed_token(env, admin_signers, token)
+    }
+
+    pub fn set_token_config(
+        env: Env,
+        admin_signers: Vec<Address>,
+        token: Address,
+        token_cfg: TokenConfig,
+    ) {
+        admin::set_token_config(env, admin_signers, token, token_cfg)
+    }
+
+    pub fn get_token_config(env: Env, token: Address) -> Option<TokenConfig> {
+        admin::get_token_config(env, token)
     }
 
     // ── Governance ────────────────────────────────────────────────────────────
@@ -300,6 +376,56 @@ impl QuorumCreditContract {
         approve: bool,
     ) -> Result<(), ContractError> {
         governance::vote_slash(env, voucher, borrower, approve)
+    }
+
+    pub fn get_slash_vote(env: Env, borrower: Address) -> Option<SlashVoteRecord> {
+        governance::get_slash_vote(env, borrower)
+    }
+
+    pub fn set_slash_vote_quorum(env: Env, admin_signers: Vec<Address>, quorum_bps: u32) {
+        helpers::require_admin_approval(&env, &admin_signers);
+        governance::set_slash_vote_quorum(&env, quorum_bps);
+    }
+
+    pub fn get_slash_vote_quorum(env: Env) -> u32 {
+        governance::get_slash_vote_quorum(env)
+    }
+
+    pub fn execute_slash_vote(env: Env, borrower: Address) -> Result<(), ContractError> {
+        governance::execute_slash_vote(env, borrower)
+    }
+
+    pub fn propose_admin(env: Env, admin_signers: Vec<Address>, new_admin: Address) -> Result<(), ContractError> {
+        admin::propose_admin(env, admin_signers, new_admin)
+    }
+
+    pub fn accept_admin(env: Env) -> Result<(), ContractError> {
+        admin::accept_admin(env)
+    }
+
+    pub fn propose_slash(
+        env: Env,
+        proposer: Address,
+        borrower: Address,
+        delay_secs: u64,
+    ) -> Result<u64, ContractError> {
+        governance::propose_slash(env, proposer, borrower, delay_secs)
+    }
+
+    pub fn execute_slash_proposal(env: Env, proposal_id: u64) -> Result<(), ContractError> {
+        governance::execute_slash_proposal(env, proposal_id)
+    }
+
+    pub fn cancel_slash_proposal(
+        env: Env,
+        caller: Address,
+        proposal_id: u64,
+    ) -> Result<(), ContractError> {
+        governance::cancel_slash_proposal(env, caller, proposal_id)
+    }
+
+    pub fn get_timelock_proposal(env: Env, proposal_id: u64) -> Option<TimelockProposal> {
+        governance::get_timelock_proposal(env, proposal_id)
     }
 
     // ── Views ─────────────────────────────────────────────────────────────────
@@ -346,12 +472,36 @@ impl QuorumCreditContract {
         admin::is_whitelisted(env, voucher)
     }
 
+    pub fn is_voucher_whitelisted(env: Env, voucher: Address) -> bool {
+        admin::is_whitelisted(env, voucher)
+    }
+
+    pub fn is_voucher_whitelist_enabled(env: Env) -> bool {
+        admin::is_voucher_whitelist_enabled(env)
+    }
+
+    pub fn is_borrower_whitelisted(env: Env, borrower: Address) -> bool {
+        admin::is_borrower_whitelisted(env, borrower)
+    }
+
+    pub fn is_borrower_whitelist_enabled(env: Env) -> bool {
+        admin::is_borrower_whitelist_enabled(env)
+    }
+
     pub fn get_loan(env: Env, borrower: Address) -> Option<LoanRecord> {
         loan::get_loan(env, borrower)
     }
 
     pub fn get_loan_by_id(env: Env, loan_id: u64) -> Option<LoanRecord> {
         loan::get_loan_by_id(env, loan_id)
+    }
+
+    pub fn get_loan_purpose(env: Env, loan_id: u64) -> Option<soroban_sdk::String> {
+        loan::get_loan_purpose(env, loan_id)
+    }
+
+    pub fn get_loan_status(env: Env, loan_id: u64) -> LoanStatus {
+        loan::get_loan_status(env, loan_id)
     }
 
     pub fn get_vouches(env: Env, borrower: Address) -> Option<Vec<VouchRecord>> {

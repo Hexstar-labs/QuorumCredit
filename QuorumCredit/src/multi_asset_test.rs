@@ -36,7 +36,13 @@ mod multi_asset_tests {
 
         env.ledger().with_mut(|l| l.timestamp = 120);
 
-        Setup { env, client, xlm: xlm_id.address(), usdc: usdc_id.address(), admin }
+        Setup {
+            env,
+            client,
+            xlm: xlm_id.address(),
+            usdc: usdc_id.address(),
+            admin,
+        }
     }
 
     fn purpose(env: &Env) -> String {
@@ -51,7 +57,10 @@ mod multi_asset_tests {
 
         StellarAssetClient::new(&s.env, &s.usdc).mint(&voucher, &1_000_000);
         s.client.vouch(&voucher, &borrower, &1_000_000, &s.usdc);
-        s.client.request_loan(&borrower, &100_000, &500_000, &purpose(&s.env), &s.usdc);
+        // Advance time past MIN_VOUCH_AGE (60s) so the vouch is eligible
+        s.env.ledger().with_mut(|l| l.timestamp += 61);
+        s.client
+            .request_loan(&borrower, &100_000, &500_000, &purpose(&s.env), &s.usdc);
 
         let loan = s.client.get_loan(&borrower).unwrap();
         assert_eq!(loan.token_address, s.usdc);
@@ -66,8 +75,12 @@ mod multi_asset_tests {
 
         StellarAssetClient::new(&s.env, &s.xlm).mint(&voucher, &1_000_000);
         s.client.vouch(&voucher, &borrower, &1_000_000, &s.xlm);
+        // Advance time past MIN_VOUCH_AGE (60s) so the vouch is eligible
+        s.env.ledger().with_mut(|l| l.timestamp += 61);
 
-        let result = s.client.try_request_loan(&borrower, &100_000, &500_000, &purpose(&s.env), &s.usdc);
+        let result =
+            s.client
+                .try_request_loan(&borrower, &100_000, &500_000, &purpose(&s.env), &s.usdc);
         assert!(result.is_err());
     }
 
@@ -78,7 +91,9 @@ mod multi_asset_tests {
         let borrower = Address::generate(&s.env);
         let random_token = Address::generate(&s.env);
 
-        let result = s.client.try_vouch(&voucher, &borrower, &100_000, &random_token);
+        let result = s
+            .client
+            .try_vouch(&voucher, &borrower, &100_000, &random_token);
         assert_eq!(result, Err(Ok(ContractError::InvalidToken)));
     }
 
@@ -88,7 +103,13 @@ mod multi_asset_tests {
         let borrower = Address::generate(&s.env);
         let random_token = Address::generate(&s.env);
 
-        let result = s.client.try_request_loan(&borrower, &100_000, &500_000, &purpose(&s.env), &random_token);
+        let result = s.client.try_request_loan(
+            &borrower,
+            &100_000,
+            &500_000,
+            &purpose(&s.env),
+            &random_token,
+        );
         assert_eq!(result, Err(Ok(ContractError::InvalidToken)));
     }
 
@@ -105,6 +126,15 @@ mod multi_asset_tests {
     }
 
     #[test]
+    fn test_add_allowed_token_rejects_invalid_token() {
+        let s = setup();
+        let admins = Vec::from_array(&s.env, [s.admin.clone()]);
+        let invalid = Address::generate(&s.env); // not a token contract
+        let result = s.client.try_add_allowed_token(&admins, &invalid);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn test_primary_token_always_allowed() {
         let s = setup();
         let voucher = Address::generate(&s.env);
@@ -112,7 +142,10 @@ mod multi_asset_tests {
 
         StellarAssetClient::new(&s.env, &s.xlm).mint(&voucher, &1_000_000);
         s.client.vouch(&voucher, &borrower, &1_000_000, &s.xlm);
-        s.client.request_loan(&borrower, &100_000, &500_000, &purpose(&s.env), &s.xlm);
+        // Advance time past MIN_VOUCH_AGE (60s) so the vouch is eligible
+        s.env.ledger().with_mut(|l| l.timestamp += 61);
+        s.client
+            .request_loan(&borrower, &100_000, &500_000, &purpose(&s.env), &s.xlm);
 
         let loan = s.client.get_loan(&borrower).unwrap();
         assert_eq!(loan.token_address, s.xlm);

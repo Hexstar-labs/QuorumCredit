@@ -83,8 +83,8 @@ pub fn vote_slash(
         .get(&DataKey::SlashVoteQuorum)
         .unwrap_or(DEFAULT_SLASH_VOTE_QUORUM_BPS);
 
-    let quorum_reached = total_stake > 0
-        && vote.approve_stake * 10_000 / total_stake >= quorum_bps as i128;
+    let quorum_reached =
+        total_stake > 0 && vote.approve_stake * 10_000 / total_stake >= quorum_bps as i128;
 
     if quorum_reached {
         vote.executed = true;
@@ -111,10 +111,9 @@ pub fn get_slash_vote(env: Env, borrower: Address) -> Option<SlashVoteRecord> {
 /// Set the quorum threshold (in basis points) required to auto-execute a slash.
 /// Requires admin approval — called from admin module.
 pub fn set_slash_vote_quorum(env: &Env, quorum_bps: u32) {
-    assert!(
-        quorum_bps > 0 && quorum_bps <= 10_000,
-        "quorum_bps must be 1-10000"
-    );
+    if quorum_bps > 10_000 {
+        panic_with_error!(env, ContractError::InvalidBps);
+    }
     env.storage()
         .instance()
         .set(&DataKey::SlashVoteQuorum, &quorum_bps);
@@ -125,6 +124,52 @@ pub fn get_slash_vote_quorum(env: Env) -> u32 {
         .instance()
         .get(&DataKey::SlashVoteQuorum)
         .unwrap_or(DEFAULT_SLASH_VOTE_QUORUM_BPS)
+}
+
+/// Execute a slash vote if quorum has been met.
+/// Anyone can call this function to execute a slash once quorum is reached.
+pub fn execute_slash_vote(env: Env, borrower: Address) -> Result<(), ContractError> {
+    require_not_paused(&env)?;
+
+    let vote = env
+        .storage()
+        .persistent()
+        .get(&DataKey::SlashVote(borrower.clone()))
+        .ok_or(ContractError::SlashVoteNotFound)?;
+
+    if vote.executed {
+        return Err(ContractError::SlashAlreadyExecuted);
+    }
+
+    // Get total stake for the borrower
+    let vouches: Vec<VouchRecord> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Vouches(borrower.clone()))
+        .unwrap_or(Vec::new(&env));
+    let total_stake: i128 = vouches.iter().map(|v| v.amount).sum();
+
+    // Retrieve quorum threshold
+    let quorum_bps: u32 = get_slash_vote_quorum(env);
+
+    // Calculate required quorum stake
+    let quorum_stake = total_stake * quorum_bps as i128 / 10_000;
+
+    // Check if approval stake meets quorum
+    if vote.approve_stake < quorum_stake {
+        return Err(ContractError::QuorumNotMet);
+    }
+
+    // Mark as executed and execute the slash
+    let mut updated_vote = vote;
+    updated_vote.executed = true;
+    env.storage()
+        .persistent()
+        .set(&DataKey::SlashVote(borrower.clone()), &updated_vote);
+
+    execute_slash(&env, &borrower)?;
+
+    Ok(())
 }
 
 // ── Internal ──────────────────────────────────────────────────────────────────
@@ -147,13 +192,21 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
     validate_loan_active(&loan)?;
     let loan_token = soroban_sdk::token::Client::new(env, &loan.token_address);
 
+    // Use token-specific slash_bps if configured, otherwise fall back to global.
+    let slash_bps = env
+        .storage()
+        .persistent()
+        .get::<DataKey, crate::types::TokenConfig>(&DataKey::TokenConfig(loan.token_address.clone()))
+        .map(|tc| tc.slash_bps)
+        .unwrap_or(cfg.slash_bps);
+
     let mut total_slashed: i128 = 0;
 
     for v in vouches.iter() {
         if v.token != loan.token_address {
             continue;
         }
-        let slash_amount = v.amount * cfg.slash_bps / 10_000;
+        let slash_amount = v.amount * slash_bps / 10_000;
         let remaining = v.amount - slash_amount;
         total_slashed += slash_amount;
 
@@ -246,10 +299,7 @@ pub fn propose_slash(
 }
 
 /// Execute a previously proposed slash action after the delay has passed.
-pub fn execute_slash_proposal(
-    env: Env,
-    proposal_id: u64,
-) -> Result<(), ContractError> {
+pub fn execute_slash_proposal(env: Env, proposal_id: u64) -> Result<(), ContractError> {
     require_not_paused(&env)?;
 
     // Get the proposal
@@ -257,25 +307,25 @@ pub fn execute_slash_proposal(
         .storage()
         .instance()
         .get(&DataKey::Timelock(proposal_id))
-        .ok_or(ContractError::NoActiveLoan)?; // Use existing error as placeholder
+        .ok_or(ContractError::TimelockNotFound)?;
 
     // Check proposal state
     if proposal.executed {
         return Err(ContractError::SlashAlreadyExecuted);
     }
     if proposal.cancelled {
-        return Err(ContractError::NoActiveLoan); // Use existing error as placeholder
+        return Err(ContractError::TimelockNotFound);
     }
 
     // Check delay has passed
     if env.ledger().timestamp() < proposal.eta {
-        return Err(ContractError::NoActiveLoan); // Use existing error as placeholder
+        return Err(ContractError::TimelockNotReady);
     }
 
     // Check expiry (72 hours from eta)
     const TIMELOCK_EXPIRY: u64 = 72 * 60 * 60;
     if env.ledger().timestamp() > proposal.eta + TIMELOCK_EXPIRY {
-        return Err(ContractError::NoActiveLoan); // Use existing error as placeholder
+        return Err(ContractError::TimelockExpired);
     }
 
     // Extract borrower from the Slash action
@@ -315,7 +365,9 @@ pub fn cancel_slash_proposal(
         .ok_or(ContractError::NoActiveLoan)?;
 
     // Only proposer can cancel
-    assert!(caller == proposal.proposer, "only proposer can cancel");
+    if caller != proposal.proposer {
+        return Err(ContractError::UnauthorizedCaller);
+    }
 
     if proposal.executed || proposal.cancelled {
         return Err(ContractError::SlashAlreadyExecuted);
@@ -340,4 +392,3 @@ pub fn get_timelock_proposal(env: Env, proposal_id: u64) -> Option<TimelockPropo
         .instance()
         .get(&DataKey::Timelock(proposal_id))
 }
-

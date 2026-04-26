@@ -1,6 +1,6 @@
-use crate::helpers::{config, extend_ttl, require_admin_approval, validate_admin_config};
-use crate::types::{Config, DataKey};
-use soroban_sdk::{symbol_short, Address, BytesN, Env, Vec};
+use crate::helpers::{config, extend_ttl, require_admin_approval, require_valid_token, validate_admin_config};
+use crate::types::{Config, DataKey, TokenConfig};
+use soroban_sdk::{panic_with_error, symbol_short, Address, BytesN, Env, Vec};
 
 pub fn add_admin(env: Env, admin_signers: Vec<Address>, new_admin: Address) {
     require_admin_approval(&env, &admin_signers);
@@ -117,6 +117,84 @@ pub fn whitelist_voucher(env: Env, admin_signers: Vec<Address>, voucher: Address
     extend_ttl(&env, &DataKey::VoucherWhitelist(voucher));
 }
 
+pub fn add_voucher_to_whitelist(env: Env, admin_signers: Vec<Address>, voucher: Address) {
+    require_admin_approval(&env, &admin_signers);
+    env.storage()
+        .persistent()
+        .set(&DataKey::VoucherWhitelist(voucher.clone()), &true);
+    extend_ttl(&env, &DataKey::VoucherWhitelist(voucher));
+}
+
+pub fn remove_voucher_from_whitelist(env: Env, admin_signers: Vec<Address>, voucher: Address) {
+    require_admin_approval(&env, &admin_signers);
+    env.storage()
+        .persistent()
+        .remove(&DataKey::VoucherWhitelist(voucher));
+}
+
+pub fn enable_voucher_whitelist(env: Env, admin_signers: Vec<Address>) {
+    require_admin_approval(&env, &admin_signers);
+    env.storage()
+        .instance()
+        .set(&DataKey::VoucherWhitelistEnabled, &true);
+}
+
+pub fn disable_voucher_whitelist(env: Env, admin_signers: Vec<Address>) {
+    require_admin_approval(&env, &admin_signers);
+    env.storage()
+        .instance()
+        .set(&DataKey::VoucherWhitelistEnabled, &false);
+}
+
+pub fn is_voucher_whitelist_enabled(env: Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::VoucherWhitelistEnabled)
+        .unwrap_or(false)
+}
+
+pub fn add_borrower_to_whitelist(env: Env, admin_signers: Vec<Address>, borrower: Address) {
+    require_admin_approval(&env, &admin_signers);
+    env.storage()
+        .persistent()
+        .set(&DataKey::BorrowerWhitelist(borrower.clone()), &true);
+    extend_ttl(&env, &DataKey::BorrowerWhitelist(borrower));
+}
+
+pub fn remove_borrower_from_whitelist(env: Env, admin_signers: Vec<Address>, borrower: Address) {
+    require_admin_approval(&env, &admin_signers);
+    env.storage()
+        .persistent()
+        .remove(&DataKey::BorrowerWhitelist(borrower));
+}
+
+pub fn enable_borrower_whitelist(env: Env, admin_signers: Vec<Address>) {
+    require_admin_approval(&env, &admin_signers);
+    env.storage()
+        .instance()
+        .set(&DataKey::BorrowerWhitelistEnabled, &true);
+}
+
+pub fn disable_borrower_whitelist(env: Env, admin_signers: Vec<Address>) {
+    require_admin_approval(&env, &admin_signers);
+    env.storage()
+        .instance()
+        .set(&DataKey::BorrowerWhitelistEnabled, &false);
+}
+
+pub fn is_borrower_whitelisted(env: Env, borrower: Address) -> bool {
+    env.storage()
+        .persistent()
+        .get(&DataKey::BorrowerWhitelist(borrower))
+        .unwrap_or(false)
+}
+
+pub fn is_borrower_whitelist_enabled(env: Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::BorrowerWhitelistEnabled)
+        .unwrap_or(false)
+}
 pub fn set_fee_treasury(env: Env, admin_signers: Vec<Address>, treasury: Address) {
     require_admin_approval(&env, &admin_signers);
     env.storage()
@@ -162,7 +240,9 @@ pub fn set_config(env: Env, admin_signers: Vec<Address>, config: Config) {
     require_admin_approval(&env, &admin_signers);
     validate_admin_config(&env, &config.admins, config.admin_threshold)
         .expect("invalid admin config");
-    assert!(config.yield_bps >= 0, "yield_bps must be non-negative");
+    if config.yield_bps < 0 || config.yield_bps > 10_000 {
+        panic_with_error!(&env, ContractError::InvalidBps);
+    }
     assert!(
         config.slash_bps > 0 && config.slash_bps <= 10_000,
         "slash_bps must be 1-10000"
@@ -178,6 +258,10 @@ pub fn set_config(env: Env, admin_signers: Vec<Address>, config: Config) {
     assert!(
         config.loan_duration > 0,
         "loan_duration must be greater than zero"
+    );
+    assert!(
+        config.grace_period <= config.loan_duration,
+        "grace_period must not exceed loan_duration"
     );
     assert!(
         config.max_loan_to_stake_ratio > 0,
@@ -201,7 +285,9 @@ pub fn update_config(
     let mut cfg = config(&env);
 
     if let Some(new_yield_bps) = yield_bps {
-        assert!(new_yield_bps >= 0, "yield_bps must be non-negative");
+        if new_yield_bps < 0 || new_yield_bps > 10_000 {
+            panic_with_error!(&env, ContractError::InvalidBps);
+        }
         cfg.yield_bps = new_yield_bps;
     }
 
@@ -249,7 +335,20 @@ pub fn set_min_stake(env: Env, admin_signers: Vec<Address>, amount: i128) {
     );
 }
 
-pub fn set_max_loan_amount(env: Env, admin_signers: Vec<Address>, amount: i128) {
+pub fn set_min_loan_amount(
+    env: Env,
+    admin_signers: Vec<Address>,
+    amount: i128,
+) -> Result<(), ContractError> {
+    require_admin_approval(&env, &admin_signers);
+    if amount <= 0 {
+        return Err(ContractError::InvalidAmount);
+    }
+    let mut cfg = config(&env);
+    cfg.min_loan_amount = amount;
+    env.storage().instance().set(&DataKey::Config, &cfg);
+    Ok(())
+}pub fn set_max_loan_amount(env: Env, admin_signers: Vec<Address>, amount: i128) {
     require_admin_approval(&env, &admin_signers);
     assert!(amount >= 0, "max loan amount cannot be negative");
     env.storage()
@@ -286,6 +385,17 @@ pub fn set_max_loan_to_stake_ratio(env: Env, admin_signers: Vec<Address>, ratio:
     );
     let mut cfg = config(&env);
     cfg.max_loan_to_stake_ratio = ratio;
+    env.storage().instance().set(&DataKey::Config, &cfg);
+}
+
+pub fn set_grace_period(env: Env, admin_signers: Vec<Address>, period: u64) {
+    require_admin_approval(&env, &admin_signers);
+    let cfg = config(&env);
+    if period > cfg.loan_duration {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
+    let mut cfg = cfg;
+    cfg.grace_period = period;
     env.storage().instance().set(&DataKey::Config, &cfg);
 }
 
@@ -337,15 +447,16 @@ pub fn get_config(env: Env) -> Config {
     config(&env)
 }
 
-pub fn add_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) {
+pub fn add_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) -> Result<(), ContractError> {
     require_admin_approval(&env, &admin_signers);
+    require_valid_token(&env, &token).unwrap_or_else(|e| panic_with_error!(&env, e));
     let mut cfg = config(&env);
-    assert!(
-        !cfg.allowed_tokens.iter().any(|t| t == token) && token != cfg.token,
-        "token already allowed"
-    );
+    if cfg.allowed_tokens.iter().any(|t| t == token) || token == cfg.token {
+        return Err(ContractError::DuplicateToken);
+    }
     cfg.allowed_tokens.push_back(token);
     env.storage().instance().set(&DataKey::Config, &cfg);
+    Ok(())
 }
 
 pub fn remove_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) {
@@ -358,6 +469,37 @@ pub fn remove_allowed_token(env: Env, admin_signers: Vec<Address>, token: Addres
         .expect("token not in allowed list") as u32;
     cfg.allowed_tokens.remove(idx);
     env.storage().instance().set(&DataKey::Config, &cfg);
+}
+
+pub fn set_token_config(
+    env: Env,
+    admin_signers: Vec<Address>,
+    token: Address,
+    token_cfg: TokenConfig,
+) {
+    require_admin_approval(&env, &admin_signers);
+    assert!(
+        token_cfg.yield_bps >= 0 && token_cfg.yield_bps <= 10_000,
+        "yield_bps must be 0-10000"
+    );
+    assert!(
+        token_cfg.slash_bps > 0 && token_cfg.slash_bps <= 10_000,
+        "slash_bps must be 1-10000"
+    );
+    env.storage()
+        .persistent()
+        .set(&DataKey::TokenConfig(token.clone()), &token_cfg);
+    extend_ttl(&env, &DataKey::TokenConfig(token.clone()));
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("tkcfg")),
+        (admin_signers.get(0).unwrap(), token),
+    );
+}
+
+pub fn get_token_config(env: Env, token: Address) -> Option<TokenConfig> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::TokenConfig(token))
 }
 
 pub fn get_admins(env: Env) -> Vec<Address> {
@@ -373,4 +515,47 @@ pub fn is_whitelisted(env: Env, voucher: Address) -> bool {
         .persistent()
         .get(&DataKey::VoucherWhitelist(voucher))
         .unwrap_or(false)
+}
+
+pub fn propose_admin(env: Env, admin_signers: Vec<Address>, new_admin: Address) -> Result<(), ContractError> {
+    require_admin_approval(&env, &admin_signers);
+
+    if new_admin == Address::zero(&env) {
+        return Err(ContractError::ZeroAddress);
+    }
+
+    env.storage()
+        .instance()
+        .set(&DataKey::PendingAdmin, &new_admin);
+
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("proposed")),
+        new_admin,
+    );
+
+    Ok(())
+}
+
+pub fn accept_admin(env: Env) -> Result<(), ContractError> {
+    let new_admin = env
+        .storage()
+        .instance()
+        .get(&DataKey::PendingAdmin)
+        .ok_or(ContractError::UnauthorizedCaller)?;
+
+    new_admin.require_auth();
+
+    let mut cfg = config(&env);
+    cfg.admins.push_back(new_admin.clone());
+    env.storage().instance().set(&DataKey::Config, &cfg);
+
+    // Clear the pending admin
+    env.storage().instance().remove(&DataKey::PendingAdmin);
+
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("accepted")),
+        new_admin,
+    );
+
+    Ok(())
 }

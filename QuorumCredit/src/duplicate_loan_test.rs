@@ -35,12 +35,18 @@ mod duplicate_loan_tests {
         // Advance past MIN_VOUCH_AGE so vouches are eligible.
         env.ledger().with_mut(|l| l.timestamp = 120);
 
-        Setup { env, client, token_id: token_id.address() }
+        Setup {
+            env,
+            client,
+            token_id: token_id.address(),
+        }
     }
 
     fn do_vouch(s: &Setup, voucher: &Address, borrower: &Address, stake: i128) {
         StellarAssetClient::new(&s.env, &s.token_id).mint(voucher, &stake);
         s.client.vouch(voucher, borrower, &stake, &s.token_id);
+        // Advance time past MIN_VOUCH_AGE (60s) so the vouch is eligible
+        s.env.ledger().with_mut(|l| l.timestamp += 61);
     }
 
     fn do_loan(s: &Setup, borrower: &Address) {
@@ -82,7 +88,11 @@ mod duplicate_loan_tests {
         do_loan(&s, &borrower);
 
         let loan = s.client.get_loan(&borrower).expect("loan should exist");
-        assert_eq!(loan.status, crate::LoanStatus::Active, "loan should be active");
+        assert_eq!(
+            loan.status,
+            crate::LoanStatus::Active,
+            "loan should be active"
+        );
 
         // try_request_loan returns Err when a loan is already active.
         let result = s.client.try_request_loan(
