@@ -57,6 +57,7 @@ impl QuorumCreditContract {
                 loan_duration: DEFAULT_LOAN_DURATION,
                 max_loan_to_stake_ratio: DEFAULT_MAX_LOAN_TO_STAKE_RATIO,
                 grace_period: 0,
+                min_vouch_age_secs: DEFAULT_MIN_VOUCH_AGE_SECS,
             },
         );
 
@@ -1167,5 +1168,42 @@ impl QuorumCreditContract {
     /// Get the current insurance pool balance in stroops.
     pub fn get_insurance_pool_balance(env: Env) -> i128 {
         insurance::get_insurance_pool_balance(env)
+    }
+
+    // ── Issue #535: Minimum Vouch Age ────────────────────────────────────────
+
+    /// Request vouch withdrawal with timelock (Issue #537).
+    pub fn request_vouch_withdrawal(
+        env: Env,
+        voucher: Address,
+        borrower: Address,
+        token: Address,
+    ) -> Result<(), ContractError> {
+        vouch::request_vouch_withdrawal(env, voucher, borrower, token)
+    }
+
+    /// Execute vouch withdrawal after timelock expires (Issue #537).
+    pub fn execute_vouch_withdrawal(
+        env: Env,
+        voucher: Address,
+        borrower: Address,
+        token: Address,
+    ) -> Result<(), ContractError> {
+        vouch::execute_vouch_withdrawal(env, voucher, borrower, token)
+    }
+
+    /// Get slash audit record for a borrower (Issue #536).
+    pub fn get_slash_audit(env: Env, borrower: Address) -> Option<crate::types::SlashAuditRecord> {
+        loan::get_slash_audit(env, borrower)
+    }
+
+    /// Repay loan with partial payment support (Issue #538).
+    pub fn repay_partial(
+        env: Env,
+        borrower: Address,
+        payment: i128,
+        token: Address,
+    ) -> Result<(), ContractError> {
+        loan::repay_partial(env, borrower, payment, token)
     }
 }

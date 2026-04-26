@@ -6,7 +6,7 @@ use crate::helpers::{
 use crate::reputation::ReputationNftExternalClient;
 use crate::types::{
     DataKey, LoanRecord, LoanStatus, VouchRecord, BPS_DENOMINATOR, DEFAULT_REFERRAL_BONUS_BPS,
-    MIN_VOUCH_AGE,
+    AmortizationEntry,
 };
 use soroban_sdk::{panic_with_error, symbol_short, Address, Env, Vec};
 
@@ -162,8 +162,9 @@ pub fn request_loan(
     }
 
     let now = env.ledger().timestamp();
+    let min_vouch_age = cfg.min_vouch_age_secs;
     for v in token_vouches.iter() {
-        if now < v.vouch_timestamp + MIN_VOUCH_AGE {
+        if now < v.vouch_timestamp + min_vouch_age {
             return Err(ContractError::VouchTooRecent);
         }
     }
@@ -199,6 +200,7 @@ pub fn request_loan(
             deadline,
             loan_purpose,
             token_address: token_addr.clone(),
+            amortization_schedule: Vec::new(&env),
         },
     );
     env.storage()
@@ -519,6 +521,80 @@ pub fn mint_reputation_nft(env: Env, borrower: Address) -> Result<(), ContractEr
     env.events().publish(
         (symbol_short!("rep"), symbol_short!("minted")),
         borrower,
+    );
+
+    Ok(())
+}
+
+/// Get slash audit record for a borrower.
+pub fn get_slash_audit(env: Env, borrower: Address) -> Option<crate::types::SlashAuditRecord> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::SlashAudit(borrower))
+}
+
+/// Repay loan with partial payment support.
+pub fn repay_partial(
+    env: Env,
+    borrower: Address,
+    payment: i128,
+    token: Address,
+) -> Result<(), ContractError> {
+    borrower.require_auth();
+    require_not_paused(&env)?;
+
+    let mut loan = get_active_loan_record(&env, &borrower)?;
+
+    if borrower != loan.borrower {
+        return Err(ContractError::UnauthorizedCaller);
+    }
+
+    for cb in loan.co_borrowers.iter() {
+        cb.require_auth();
+    }
+
+    if payment <= 0 {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
+
+    let outstanding = loan.amount + loan.total_yield - loan.amount_repaid;
+    if payment > outstanding {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
+
+    let loan_token = require_allowed_token(&env, &token)?;
+    loan_token.transfer(&env.current_contract_address(), &borrower, &payment);
+
+    loan.amount_repaid = loan.amount_repaid + payment;
+
+    if loan.amount_repaid >= loan.amount + loan.total_yield {
+        loan.status = LoanStatus::Repaid;
+        loan.repayment_timestamp = Some(env.ledger().timestamp());
+
+        let count: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RepaymentCount(borrower.clone()))
+            .unwrap_or(0);
+        env.storage()
+            .persistent()
+            .set(&DataKey::RepaymentCount(borrower.clone()), &(count + 1));
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::ActiveLoan(borrower.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Vouches(borrower.clone()));
+    }
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::Loan(loan.id), &loan);
+
+    env.events().publish(
+        (symbol_short!("loan"), symbol_short!("partial_repay")),
+        (borrower.clone(), payment),
     );
 
     Ok(())
