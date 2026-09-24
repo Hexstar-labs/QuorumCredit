@@ -1,7 +1,4 @@
-import type {
-  Notification,
-  NotificationChannel,
-} from "./notificationStore.js";
+import type { Notification } from "./notificationStore.js";
 
 /**
  * Issue #1583: Notification delivery service for sending credential holder
@@ -145,7 +142,7 @@ export class NotificationDelivery {
    * Validate push token format (basic check).
    */
   isValidPushToken(token: string): boolean {
-    return token && token.length > 10;
+    return !!token && token.length > 10;
   }
 
   /**
@@ -153,7 +150,7 @@ export class NotificationDelivery {
    */
   getTemplate(
     type: string
-  ): { subject: string; template: (data?: Record<string, unknown>) => string } {
+  ): { subject: string; template: (_data?: Record<string, unknown>) => string } {
     const templates: Record<
       string,
       { subject: string; template: (data?: Record<string, unknown>) => string }

@@ -1,4 +1,4 @@
-import type { CostReport, FeatureCost } from "./costAllocator.js";
+import type { CostReport } from "./costAllocator.js";
 
 export interface CostTrend {
   month: string;

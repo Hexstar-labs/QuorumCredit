@@ -12,7 +12,6 @@ import { CostOptimizer } from "../costs/costOptimizer.js";
 import { notificationStore } from "../notifications/notificationStore.js";
 import type { NotificationDelivery } from "../notifications/notificationDelivery.js";
 import { exportStore } from "../exports/exportStore.js";
-import { ExportFormatter } from "../exports/exportFormatter.js";
 import { ComplexityScorer } from "../verification/complexityScorer.js";
 
 export interface RouteContext {
