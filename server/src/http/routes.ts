@@ -8,6 +8,7 @@ import { loanCartStore } from "../cart/loanCartStore.js";
 import type { RevocationStore } from "../auth/jtiRevocationStore.js";
 import type { SorobanRpcClient } from "../soroban/rpcClient.js";
 import type { RecurringPaymentStore } from "../recurring/recurringPaymentStore.js";
+import { CostOptimizer } from "../costs/costOptimizer.js";
 
 export interface RouteContext {
   authSecret: string;
@@ -29,6 +30,8 @@ export interface RouteContext {
   rpcClient?: SorobanRpcClient;
   /** Issue #1362 — Persistent recurring payment store (Local or Redis-backed). */
   paymentStore?: RecurringPaymentStore;
+  /** Issue #1581 — Cost optimization analyzer for resource utilization analysis. */
+  costOptimizer?: CostOptimizer;
 }
 
 /**
@@ -486,6 +489,21 @@ export function handleHttpRequest(
     }
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(ctx.costAllocator.generateMonthlyReports()));
+    return;
+  }
+
+  // Issue #1581: Cost optimization analysis and recommendations
+  if (req.method === "GET" && url.pathname === "/costs/optimization") {
+    if (!ctx.costAllocator || !ctx.costOptimizer) {
+      res.writeHead(503, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "cost optimization is not configured on this instance" }));
+      return;
+    }
+    const latestReport = ctx.costAllocator.currentReport();
+    const analysis = ctx.costOptimizer.analyzeCosts(latestReport);
+    metrics.incCounter("qc_cost_optimization_analysis_total");
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(analysis));
     return;
   }
 
