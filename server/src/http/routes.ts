@@ -9,6 +9,8 @@ import type { RevocationStore } from "../auth/jtiRevocationStore.js";
 import type { SorobanRpcClient } from "../soroban/rpcClient.js";
 import type { RecurringPaymentStore } from "../recurring/recurringPaymentStore.js";
 import { CostOptimizer } from "../costs/costOptimizer.js";
+import { notificationStore } from "../notifications/notificationStore.js";
+import type { NotificationDelivery } from "../notifications/notificationDelivery.js";
 
 export interface RouteContext {
   authSecret: string;
@@ -32,6 +34,8 @@ export interface RouteContext {
   paymentStore?: RecurringPaymentStore;
   /** Issue #1581 — Cost optimization analyzer for resource utilization analysis. */
   costOptimizer?: CostOptimizer;
+  /** Issue #1583 — Notification delivery service for email and push notifications. */
+  notificationDelivery?: NotificationDelivery;
 }
 
 /**
@@ -587,6 +591,96 @@ export function handleHttpRequest(
         res.writeHead(400, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: "invalid request body" }));
       });
+    return;
+  }
+
+  // ── Issue #1583: Credential holder notification system ────────────────────
+
+  // GET /notifications/preferences/:credentialId
+  const notifPrefMatch = url.pathname.match(/^\/notifications\/preferences\/([^/]+)$/);
+  if (notifPrefMatch && req.method === "GET") {
+    const credentialId = decodeURIComponent(notifPrefMatch[1] as string);
+    const prefs = notificationStore.getPreferences(credentialId);
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(
+      JSON.stringify({
+        credentialId: prefs.credentialId,
+        email: prefs.email,
+        enabledChannels: prefs.enabledChannels,
+        enabledTypes: Array.from(prefs.enabledTypes),
+      })
+    );
+    metrics.incCounter("qc_notification_preferences_retrieved_total");
+    return;
+  }
+
+  // POST /notifications/preferences/:credentialId
+  if (notifPrefMatch && req.method === "POST") {
+    const credentialId = decodeURIComponent(notifPrefMatch[1] as string);
+    readJsonBody<{
+      email?: string;
+      pushToken?: string;
+      phoneNumber?: string;
+      enabledChannels?: string[];
+      enabledTypes?: string[];
+    }>(req)
+      .then((body) => {
+        const updated = notificationStore.updatePreferences(credentialId, {
+          email: body.email,
+          pushToken: body.pushToken,
+          phoneNumber: body.phoneNumber,
+          enabledChannels: (body.enabledChannels as any) || [],
+          enabledTypes: new Set(body.enabledTypes || []) as any,
+        });
+        metrics.incCounter("qc_notification_preferences_updated_total");
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            credentialId: updated.credentialId,
+            email: updated.email,
+            enabledChannels: updated.enabledChannels,
+            enabledTypes: Array.from(updated.enabledTypes),
+          })
+        );
+      })
+      .catch(() => {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "invalid request body" }));
+      });
+    return;
+  }
+
+  // POST /notifications/unsubscribe/:credentialId
+  const notifUnsubMatch = url.pathname.match(/^\/notifications\/unsubscribe\/([^/]+)$/);
+  if (notifUnsubMatch && req.method === "POST") {
+    const credentialId = decodeURIComponent(notifUnsubMatch[1] as string);
+    notificationStore.unsubscribe(credentialId);
+    metrics.incCounter("qc_notification_unsubscriptions_total");
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ unsubscribed: true, credentialId }));
+    return;
+  }
+
+  // GET /notifications/history/:credentialId
+  const notifHistMatch = url.pathname.match(/^\/notifications\/history\/([^/]+)$/);
+  if (notifHistMatch && req.method === "GET") {
+    const credentialId = decodeURIComponent(notifHistMatch[1] as string);
+    const limit = url.searchParams.get("limit")
+      ? parseInt(url.searchParams.get("limit") as string, 10)
+      : 50;
+    const history = notificationStore.getNotificationHistory(credentialId, limit);
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(history));
+    metrics.incCounter("qc_notification_history_retrieved_total");
+    return;
+  }
+
+  // GET /notifications/stats
+  if (req.method === "GET" && url.pathname === "/notifications/stats") {
+    const stats = notificationStore.getStatistics();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(stats));
+    metrics.incCounter("qc_notification_stats_retrieved_total");
     return;
   }
 
