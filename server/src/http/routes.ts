@@ -11,6 +11,8 @@ import type { RecurringPaymentStore } from "../recurring/recurringPaymentStore.j
 import { CostOptimizer } from "../costs/costOptimizer.js";
 import { notificationStore } from "../notifications/notificationStore.js";
 import type { NotificationDelivery } from "../notifications/notificationDelivery.js";
+import { exportStore } from "../exports/exportStore.js";
+import { ExportFormatter } from "../exports/exportFormatter.js";
 
 export interface RouteContext {
   authSecret: string;
@@ -681,6 +683,121 @@ export function handleHttpRequest(
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(stats));
     metrics.incCounter("qc_notification_stats_retrieved_total");
+    return;
+  }
+
+  // ── Issue #1584: Credential holder export functionality ──────────────────
+
+  // POST /exports/:credentialId — Create export request
+  const exportCreateMatch = url.pathname.match(/^\/exports\/([^/]+)$/);
+  if (exportCreateMatch && req.method === "POST") {
+    const credentialId = decodeURIComponent(exportCreateMatch[1] as string);
+    readJsonBody<{ format?: string; metadata?: Record<string, unknown> }>(req)
+      .then((body) => {
+        const format = body.format || "json";
+        if (!["json", "csv", "pdf"].includes(format)) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "Invalid format. Supported: json, csv, pdf" }));
+          return;
+        }
+
+        const exportRequest = exportStore.createExportRequest(
+          credentialId,
+          format as any,
+          body.metadata
+        );
+        metrics.incCounter("qc_exports_created_total");
+        res.writeHead(201, { "content-type": "application/json" });
+        res.end(JSON.stringify(exportRequest));
+      })
+      .catch(() => {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "invalid request body" }));
+      });
+    return;
+  }
+
+  // GET /exports/:credentialId — Get exports for credential
+  if (exportCreateMatch && req.method === "GET") {
+    const credentialId = decodeURIComponent(exportCreateMatch[1] as string);
+    const limit = url.searchParams.get("limit")
+      ? parseInt(url.searchParams.get("limit") as string, 10)
+      : 50;
+    const exports = exportStore.getCredentialExports(credentialId, limit);
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(exports));
+    metrics.incCounter("qc_exports_listed_total");
+    return;
+  }
+
+  // GET /exports/:credentialId/:exportId — Get export status
+  const exportStatusMatch = url.pathname.match(
+    /^\/exports\/([^/]+)\/([^/]+)$/
+  );
+  if (exportStatusMatch && req.method === "GET") {
+    const exportId = decodeURIComponent(exportStatusMatch[2] as string);
+    const exportRequest = exportStore.getExport(exportId);
+    if (!exportRequest) {
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "export not found" }));
+      return;
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(exportRequest));
+    metrics.incCounter("qc_exports_retrieved_total");
+    return;
+  }
+
+  // POST /exports/:credentialId/:exportId/schedule — Schedule recurring exports
+  const exportScheduleMatch = url.pathname.match(
+    /^\/exports\/([^/]+)\/schedule$/
+  );
+  if (exportScheduleMatch && req.method === "POST") {
+    const credentialId = decodeURIComponent(exportScheduleMatch[1] as string);
+    readJsonBody<{
+      format?: string;
+      frequency?: string;
+      startDate?: number;
+    }>(req)
+      .then((body) => {
+        const format = body.format || "json";
+        const frequency = body.frequency || "weekly";
+
+        if (!["json", "csv", "pdf"].includes(format)) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "Invalid format" }));
+          return;
+        }
+
+        if (!["daily", "weekly", "monthly"].includes(frequency)) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "Invalid frequency" }));
+          return;
+        }
+
+        const scheduled = exportStore.createScheduledExport(
+          credentialId,
+          format as any,
+          frequency as any,
+          body.startDate
+        );
+        metrics.incCounter("qc_scheduled_exports_created_total");
+        res.writeHead(201, { "content-type": "application/json" });
+        res.end(JSON.stringify(scheduled));
+      })
+      .catch(() => {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "invalid request body" }));
+      });
+    return;
+  }
+
+  // GET /exports/stats — Get export statistics
+  if (req.method === "GET" && url.pathname === "/exports/stats") {
+    const stats = exportStore.getStatistics();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(stats));
+    metrics.incCounter("qc_exports_stats_retrieved_total");
     return;
   }
 
