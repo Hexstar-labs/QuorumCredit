@@ -13,6 +13,7 @@ import { notificationStore } from "../notifications/notificationStore.js";
 import type { NotificationDelivery } from "../notifications/notificationDelivery.js";
 import { exportStore } from "../exports/exportStore.js";
 import { ExportFormatter } from "../exports/exportFormatter.js";
+import { ComplexityScorer } from "../verification/complexityScorer.js";
 
 export interface RouteContext {
   authSecret: string;
@@ -38,6 +39,8 @@ export interface RouteContext {
   costOptimizer?: CostOptimizer;
   /** Issue #1583 — Notification delivery service for email and push notifications. */
   notificationDelivery?: NotificationDelivery;
+  /** Issue #1585 — Credential verification complexity scoring and analysis. */
+  complexityScorer?: ComplexityScorer;
 }
 
 /**
@@ -798,6 +801,117 @@ export function handleHttpRequest(
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(stats));
     metrics.incCounter("qc_exports_stats_retrieved_total");
+    return;
+  }
+
+  // ── Issue #1585: Credential verification complexity scoring ───────────────
+
+  // POST /verification/score — Score verification complexity
+  if (req.method === "POST" && url.pathname === "/verification/score") {
+    if (!ctx.complexityScorer) {
+      res.writeHead(503, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "complexity scoring is not configured on this instance" }));
+      return;
+    }
+    readJsonBody<{
+      credentialId?: string;
+      method?: string;
+      dataFields?: number;
+      requiresBiometric?: boolean;
+      requiresManualReview?: boolean;
+      documentCount?: number;
+    }>(req)
+      .then((body) => {
+        if (!body.credentialId || !body.method) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "credentialId and method required" }));
+          return;
+        }
+
+        const score = ctx.complexityScorer!.scoreVerification({
+          credentialId: body.credentialId,
+          method: body.method,
+          dataFields: body.dataFields || 0,
+          requiresBiometric: body.requiresBiometric || false,
+          requiresManualReview: body.requiresManualReview || false,
+          documentCount: body.documentCount || 0,
+          createdAt: Date.now(),
+        });
+
+        metrics.incCounter("qc_verification_scores_computed_total");
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify(score));
+      })
+      .catch(() => {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "invalid request body" }));
+      });
+    return;
+  }
+
+  // GET /verification/score/:credentialId — Get complexity score for credential
+  const verifScoreMatch = url.pathname.match(/^\/verification\/score\/([^/]+)$/);
+  if (verifScoreMatch && req.method === "GET") {
+    if (!ctx.complexityScorer) {
+      res.writeHead(503, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "complexity scoring is not configured on this instance" }));
+      return;
+    }
+    const credentialId = decodeURIComponent(verifScoreMatch[1] as string);
+    const score = ctx.complexityScorer.getScore(credentialId);
+    if (!score) {
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "no complexity score for this credential" }));
+      return;
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(score));
+    metrics.incCounter("qc_verification_scores_retrieved_total");
+    return;
+  }
+
+  // GET /verification/trends — Get complexity trends
+  if (req.method === "GET" && url.pathname === "/verification/trends") {
+    if (!ctx.complexityScorer) {
+      res.writeHead(503, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "complexity scoring is not configured on this instance" }));
+      return;
+    }
+    const trends = ctx.complexityScorer.getTrends();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(trends));
+    metrics.incCounter("qc_verification_trends_retrieved_total");
+    return;
+  }
+
+  // GET /verification/optimizations — Get optimization recommendations
+  if (req.method === "GET" && url.pathname === "/verification/optimizations") {
+    if (!ctx.complexityScorer) {
+      res.writeHead(503, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "complexity scoring is not configured on this instance" }));
+      return;
+    }
+    const threshold = url.searchParams.get("threshold")
+      ? parseFloat(url.searchParams.get("threshold") as string)
+      : 7;
+    const optimizations = ctx.complexityScorer.getOptimizations(threshold);
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(optimizations));
+    metrics.incCounter("qc_verification_optimizations_retrieved_total");
+    return;
+  }
+
+  // GET /verification/stats — Get verification statistics
+  if (req.method === "GET" && url.pathname === "/verification/stats") {
+    if (!ctx.complexityScorer) {
+      res.writeHead(503, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "complexity scoring is not configured on this instance" }));
+      return;
+    }
+    const stats = ctx.complexityScorer.getStatistics();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(stats));
+    metrics.incCounter("qc_verification_stats_retrieved_total");
     return;
   }
 
