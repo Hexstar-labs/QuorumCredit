@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { credentialStore } from "../credentials/credentialStore.js";
+import { parseFieldsParam, projectCredential } from "../credentials/fieldProjection.js";
 import {
   credentialImportStore,
   parseCredentialCsv,
@@ -71,6 +72,34 @@ export function handleApiV1Request(
         return;
       }
       await handleCredentialImport(req, res, authorized.payload.sub);
+      return;
+    }
+
+    // Issue #1779: progressive disclosure — return only the fields requested via ?fields=
+    const credentialMatch = url.pathname.match(/^\/api\/v1\/credentials\/([^/]+)$/);
+    if (credentialMatch && req.method === "GET") {
+      let credentialId: string;
+      try {
+        credentialId = decodeURIComponent(credentialMatch[1]!);
+      } catch {
+        sendJson(res, 400, { error: "invalid credential ID" });
+        return;
+      }
+      let paths: string[] | undefined;
+      try {
+        paths = parseFieldsParam(url.searchParams.get("fields"));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "invalid fields parameter";
+        sendJson(res, 400, { error: message });
+        return;
+      }
+      const credential = credentialStore.getCredential(credentialId);
+      // Holder-only access; other callers get a 404 so existence is not disclosed.
+      if (!credential || credential.holderId !== authorized.payload.sub) {
+        sendJson(res, 404, { error: "credential not found" });
+        return;
+      }
+      sendJson(res, 200, projectCredential(credential, paths));
       return;
     }
 
