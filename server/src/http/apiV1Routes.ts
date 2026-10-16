@@ -2,6 +2,11 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { credentialStore } from "../credentials/credentialStore.js";
 import { parseFieldsParam, projectCredential } from "../credentials/fieldProjection.js";
 import {
+  OnboardingError,
+  onboardingStore,
+  progressOf,
+} from "../onboarding/onboardingStore.js";
+import {
   credentialImportStore,
   parseCredentialCsv,
   parseCredentialJson,
@@ -100,6 +105,11 @@ export function handleApiV1Request(
         return;
       }
       sendJson(res, 200, projectCredential(credential, paths));
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/v1/onboarding")) {
+      await handleOnboardingRoute(req, res, url, authorized.payload.sub);
       return;
     }
 
@@ -223,6 +233,112 @@ async function handleCredentialImport(
   } catch (error) {
     console.error("[quorum-credit] unable to start credential import", error);
     sendJson(res, 503, { error: "credential import tracking capacity is unavailable" });
+  }
+}
+
+// Issue #1780: credential holder onboarding
+//   POST /api/v1/onboarding/start
+//   GET  /api/v1/onboarding/:flowId
+//   POST /api/v1/onboarding/:flowId/steps/:step
+//   POST /api/v1/onboarding/:flowId/complete
+const ONBOARDING_ROUTE = /^\/api\/v1\/onboarding(?:\/([^/]+)(?:\/(steps\/([^/]+)|complete))?)?$/;
+
+async function handleOnboardingRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+  holderId: string
+): Promise<void> {
+  const match = url.pathname.match(ONBOARDING_ROUTE);
+  if (!match) {
+    sendJson(res, 404, { error: "not found" });
+    return;
+  }
+  const [, rawFlowId, tail, rawStep] = match;
+
+  if (!rawFlowId) {
+    sendJson(res, 404, { error: "not found" });
+    return;
+  }
+
+  if (rawFlowId === "start" && !tail) {
+    if (req.method !== "POST") {
+      res.setHeader("allow", "POST");
+      sendJson(res, 405, { error: "method not allowed" });
+      return;
+    }
+    const flow = onboardingStore.start(holderId);
+    sendJson(res, 200, { ...flow, progress: progressOf(flow) });
+    return;
+  }
+
+  let flowId: string;
+  let step: string | undefined;
+  try {
+    flowId = decodeURIComponent(rawFlowId);
+    step = rawStep ? decodeURIComponent(rawStep) : undefined;
+  } catch {
+    sendJson(res, 400, { error: "invalid onboarding ID" });
+    return;
+  }
+
+  if (!tail) {
+    if (req.method !== "GET") {
+      res.setHeader("allow", "GET");
+      sendJson(res, 405, { error: "method not allowed" });
+      return;
+    }
+    const flow = onboardingStore.getFlow(flowId, holderId);
+    if (!flow) {
+      sendJson(res, 404, { error: "onboarding flow not found" });
+      return;
+    }
+    sendJson(res, 200, { ...flow, progress: progressOf(flow) });
+    return;
+  }
+
+  if (tail === "complete") {
+    if (req.method !== "POST") {
+      res.setHeader("allow", "POST");
+      sendJson(res, 405, { error: "method not allowed" });
+      return;
+    }
+    await runOnboardingTransition(res, holderId, flowId, (id, holder) =>
+      onboardingStore.complete(id, holder)
+    );
+    return;
+  }
+
+  if (req.method !== "POST") {
+    res.setHeader("allow", "POST");
+    sendJson(res, 405, { error: "method not allowed" });
+    return;
+  }
+  await runOnboardingTransition(res, holderId, flowId, (id, holder) =>
+    onboardingStore.completeStep(id, holder, step ?? "")
+  );
+}
+
+async function runOnboardingTransition(
+  res: ServerResponse,
+  holderId: string,
+  flowId: string,
+  transition: (flowId: string, holderId: string) => ReturnType<typeof onboardingStore.complete>
+): Promise<void> {
+  try {
+    const flow = transition(flowId, holderId);
+    if (!flow) {
+      sendJson(res, 404, { error: "onboarding flow not found" });
+      return;
+    }
+    sendJson(res, 200, { ...flow, progress: progressOf(flow) });
+  } catch (error) {
+    if (error instanceof OnboardingError) {
+      const status = error.code === "unknown_step" ? 400 : 409;
+      sendJson(res, status, { error: error.message, code: error.code, missingSteps: error.missingSteps });
+      return;
+    }
+    throw error;
   }
 }
 
