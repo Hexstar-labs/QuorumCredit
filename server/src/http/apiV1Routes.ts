@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { credentialStore } from "../credentials/credentialStore.js";
 import { parseFieldsParam, projectCredential } from "../credentials/fieldProjection.js";
+import { contractStateMonitor } from "../monitoring/contractStateMonitor.js";
 import {
   OnboardingError,
   onboardingStore,
@@ -105,6 +106,34 @@ export function handleApiV1Request(
         return;
       }
       sendJson(res, 200, projectCredential(credential, paths));
+      return;
+    }
+
+    // Issue #1782: read-only view of contract state monitoring. Observations are
+    // ingested in-process only, so there is deliberately no write route here.
+    if (url.pathname === "/api/v1/state/snapshot") {
+      if (req.method !== "GET") {
+        res.setHeader("allow", "GET");
+        sendJson(res, 405, { error: "method not allowed" });
+        return;
+      }
+      sendJson(res, 200, { values: contractStateMonitor.snapshot() });
+      return;
+    }
+
+    if (url.pathname === "/api/v1/state/alerts") {
+      if (req.method !== "GET") {
+        res.setHeader("allow", "GET");
+        sendJson(res, 405, { error: "method not allowed" });
+        return;
+      }
+      const rawLimit = url.searchParams.get("limit");
+      const limit = rawLimit === null ? 25 : Number(rawLimit);
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+        sendJson(res, 400, { error: "limit must be an integer between 1 and 100" });
+        return;
+      }
+      sendJson(res, 200, { alerts: contractStateMonitor.getAlerts(limit) });
       return;
     }
 
